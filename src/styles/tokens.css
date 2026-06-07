@@ -1,0 +1,15 @@
+:root {
+  color-scheme: dark;
+  --oc-abyss: #041019;
+  --oc-abyss-2: #071c24;
+  --oc-ink: #dff9fb;
+  --oc-ink-muted: rgba(223, 249, 251, 0.68);
+  --oc-cyan: #9bf6ff;
+  --oc-teal: #52d6ca;
+  --oc-gold: #f4c76b;
+  --oc-line: rgba(155, 246, 255, 0.2);
+  --oc-glass: rgba(2, 17, 27, 0.42);
+  --oc-glass-strong: rgba(2, 17, 27, 0.62);
+  --oc-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+  --oc-radius: 8px;
+}
