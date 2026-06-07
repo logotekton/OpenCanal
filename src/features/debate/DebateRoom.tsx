@@ -61,7 +61,7 @@ export function DebateRoomView({ question, onReturn }: DebateRoomViewProps) {
           </TactileButton>
           <div>
             <p>Agent Debate Room</p>
-            <h1>{run.room.debate_question}</h1>
+            <h1>OpenCanal Debate</h1>
           </div>
           <span className="debate-receipt-id">{run.receipt.receipt_id}</span>
         </header>
@@ -98,7 +98,7 @@ export function DebateRoomView({ question, onReturn }: DebateRoomViewProps) {
         </section>
 
         <aside className="claim-stream" aria-label="Claim stream">
-          <p>Claim / Evidence Stream</p>
+          <p>Claim Stream</p>
           {run.room.claims.map((claim) => {
             const agent = agentFor(claim.agent_id);
             const active = claim.claim_id === selectedClaim?.claim_id;

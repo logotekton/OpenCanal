@@ -16,7 +16,7 @@ test("main gateway opens into debate room", async ({ page }) => {
   await expect(page.getByRole("main", { name: "OpenCanal Debate Room" })).toBeVisible({ timeout: 7000 });
 
   await expect(page.locator(".debate-header p")).toHaveText("Agent Debate Room");
-  await expect(page.getByText("Claim / Evidence Stream")).toBeVisible();
+  await expect(page.getByText("Claim Stream")).toBeVisible();
   await expect(page.getByText("Debate Receipt")).toBeVisible();
   await expect(page.getByText(/fnv1a-/)).toBeVisible();
 

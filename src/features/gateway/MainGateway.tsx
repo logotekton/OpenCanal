@@ -2,7 +2,6 @@ import { FormEvent, useEffect, useReducer, type CSSProperties } from "react";
 import { AspectCanvas } from "../../components/harness/AspectCanvas";
 import { ContrastContainer } from "../../components/harness/ContrastContainer";
 import { TactileButton } from "../../components/harness/TactileButton";
-import alt15Home from "../../../ui_prototype/assets/alt15-home.png";
 
 type GatewayState =
   | "idle"
@@ -93,7 +92,13 @@ export function MainGateway({ initialPrompt, onPromptChange, onRoomRequested }: 
   return (
     <main className="gateway-shell" aria-label="OpenCanal main gateway">
       <AspectCanvas className="gateway-canvas">
-        <ContrastContainer imageUrl={alt15Home} fallbackColor="#061018" className="gateway-scene">
+        <ContrastContainer fallbackColor="#061018" className="gateway-scene">
+          <div className="gateway-world" aria-hidden="true">
+            <span className="gateway-world__light" />
+            <span className="gateway-world__ridge gateway-world__ridge--left" />
+            <span className="gateway-world__ridge gateway-world__ridge--right" />
+            <span className="gateway-world__path" />
+          </div>
           <div className={`gateway-orbit ${active ? "is-awake" : ""} ${opening ? "is-opening" : ""} ${entering ? "is-entering" : ""}`}>
             <div className="abyss-grain" aria-hidden="true" />
             <div className="threshold-field" aria-hidden="true">
@@ -108,19 +113,31 @@ export function MainGateway({ initialPrompt, onPromptChange, onRoomRequested }: 
             <div className="personal-agent" aria-label="personal agent">
               <span className="personal-agent__core" />
               <span className="personal-agent__halo" />
+              <span className="personal-agent__sigil" />
             </div>
           </div>
 
-          <section className="gateway-copy" aria-label="OpenCanal identity">
+          <section className="gateway-brand" aria-label="OpenCanal">
             <p>Verified Agent Platform</p>
             <h1>OpenCanal</h1>
           </section>
 
+          <div className="agent-caption" aria-hidden="true">
+            <strong>나의 Agent</strong>
+            <span>Verified</span>
+          </div>
+
+          <div className="mandate-trail" aria-hidden="true">
+            <span />
+            위임 경로
+            <em>Mandate Trail</em>
+          </div>
+
           <form className={`prompt-dock ${active ? "is-submitted" : ""}`} onSubmit={submitPrompt}>
+            <span className="prompt-dock__orb" aria-hidden="true" />
             <input
               aria-label="Debate prompt"
               name="prompt"
-              defaultValue={model.prompt}
               disabled={active}
               placeholder="내 agent에게 무엇을 열어볼까요?"
             />
@@ -128,6 +145,12 @@ export function MainGateway({ initialPrompt, onPromptChange, onRoomRequested }: 
               {active ? "Opening" : "Open"}
             </TactileButton>
           </form>
+
+          <nav className="gateway-actions" aria-label="Gateway actions">
+            <button type="button">방향 정하기</button>
+            <button type="button">기억 보기</button>
+            <button type="button">Room 열기</button>
+          </nav>
 
           <div className={`gateway-status ${active ? "is-visible" : ""}`} aria-live="polite">
             <span className={model.state === "prompt_submitted" ? "is-active" : ""}>의도 파악</span>
