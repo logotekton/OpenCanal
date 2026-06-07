@@ -689,7 +689,7 @@ input {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
   gap: 18px;
-  opacity: 0.18;
+  opacity: 0.08;
   transition: opacity 180ms ease;
 }
 
@@ -748,7 +748,7 @@ input {
     inset 0 1px 0 rgba(255, 255, 255, 0.05),
     0 16px 54px rgba(0, 0, 0, 0.22);
   backdrop-filter: blur(18px);
-  opacity: 0.08;
+  opacity: 0.035;
   transition: opacity 180ms ease;
 }
 
@@ -1016,7 +1016,7 @@ input {
   background: rgba(2, 17, 27, 0.13);
   box-shadow: 0 18px 58px rgba(0, 0, 0, 0.22);
   backdrop-filter: blur(20px);
-  opacity: 0.06;
+  opacity: 0.025;
   transition: opacity 180ms ease;
 }
 
@@ -1061,7 +1061,7 @@ input {
   border-radius: var(--oc-radius);
   background: rgba(2, 17, 27, 0.18);
   backdrop-filter: blur(16px);
-  opacity: 0.06;
+  opacity: 0.025;
   transition: opacity 180ms ease;
 }
 
