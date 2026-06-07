@@ -117,6 +117,7 @@ const nebulaFragmentShader = `
 
 const signalParticleVertexShader = `
   uniform float uTime;
+  uniform float uSizeScale;
   attribute vec3 aColor;
   attribute float aSeed;
   attribute float aProgress;
@@ -141,11 +142,12 @@ const signalParticleVertexShader = `
 
     vec4 mvPosition = modelViewMatrix * vec4(displaced, 1.0);
     gl_Position = projectionMatrix * mvPosition;
-    gl_PointSize = (2.5 + head * 7.5 + aKind * 1.2) * (8.0 / -mvPosition.z);
+    gl_PointSize = (2.5 + head * 7.5 + aKind * 1.2) * (8.0 / -mvPosition.z) * uSizeScale;
   }
 `;
 
 const signalParticleFragmentShader = `
+  uniform float uAlphaScale;
   varying vec3 vColor;
   varying float vPulse;
 
@@ -154,7 +156,7 @@ const signalParticleFragmentShader = `
     float d = length(uv);
     float core = smoothstep(0.5, 0.0, d);
     float halo = smoothstep(0.5, 0.08, d);
-    float alpha = (core * 0.76 + halo * 0.24) * clamp(vPulse, 0.0, 1.0);
+    float alpha = (core * 0.76 + halo * 0.24) * clamp(vPulse, 0.0, 1.0) * uAlphaScale;
     gl_FragColor = vec4(vColor, alpha);
   }
 `;
@@ -314,7 +316,7 @@ function NebulaVeil() {
         ref={material}
         vertexShader={nebulaVertexShader}
         fragmentShader={nebulaFragmentShader}
-        uniforms={{ uTime: { value: 0 } }}
+        uniforms={{ uTime: { value: 0 }, uSizeScale: { value: 1 }, uAlphaScale: { value: 1 } }}
         transparent
         depthWrite={false}
         depthTest={false}
@@ -593,6 +595,90 @@ function SignalParticleField({ signals }: { signals: SignalSpec[] }) {
         ref={material}
         vertexShader={signalParticleVertexShader}
         fragmentShader={signalParticleFragmentShader}
+        uniforms={{ uTime: { value: 0 }, uSizeScale: { value: 0.52 }, uAlphaScale: { value: 0.46 } }}
+        transparent
+        depthWrite={false}
+        blending={AdditiveBlending}
+      />
+    </points>
+  );
+}
+
+function AmbientFilamentField() {
+  const material = useRef<ShaderMaterial>(null);
+  const geometry = useMemo(() => {
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const seeds: number[] = [];
+    const progress: number[] = [];
+    const kinds: number[] = [];
+    const anchors = [
+      new Vector3(-5.4, 2.72, -0.56),
+      new Vector3(5.35, 2.56, -0.52),
+      new Vector3(-5.2, -2.5, -0.48),
+      new Vector3(5.26, -2.38, -0.48),
+      new Vector3(-0.4, 3.24, -0.62),
+      new Vector3(0.28, -3.02, -0.58)
+    ];
+
+    Array.from({ length: 54 }).forEach((_, strandIndex) => {
+      const source = anchors[strandIndex % anchors.length];
+      const target = agentPositions[(strandIndex * 2 + 1) % agentPositions.length];
+      const via = sharedMemory
+        .clone()
+        .lerp(target, 0.26 + pseudo(strandIndex + 4) * 0.22)
+        .add(new Vector3(Math.sin(strandIndex * 1.7) * 0.74, Math.cos(strandIndex * 1.2) * 0.34, -0.12 + pseudo(strandIndex + 9) * 0.34));
+      const curve = new CatmullRomCurve3([
+        source.clone().lerp(target, pseudo(strandIndex + 1) * 0.08),
+        source.clone().lerp(via, 0.42).add(new Vector3(Math.sin(strandIndex) * 0.26, Math.cos(strandIndex * 1.4) * 0.18, 0.25)),
+        via,
+        target.clone().lerp(sharedMemory, 0.16 + pseudo(strandIndex + 2) * 0.2)
+      ]);
+      const color = new Color(strandIndex % 4 === 0 ? "#f4c76b" : strandIndex % 5 === 0 ? "#dff9fb" : "#67d6ff");
+      const sampleCount = 52 + (strandIndex % 5) * 8;
+
+      Array.from({ length: sampleCount }).forEach((__, pointIndex) => {
+        const t = pointIndex / (sampleCount - 1);
+        const p = curve.getPoint(t);
+        const jitter = 0.016 + pseudo(strandIndex * 83 + pointIndex * 19) * 0.05;
+        positions.push(
+          p.x + Math.sin(pointIndex * 0.7 + strandIndex) * jitter,
+          p.y + Math.cos(pointIndex * 0.53 + strandIndex) * jitter,
+          p.z + Math.sin(pointIndex * 0.41) * jitter
+        );
+        colors.push(color.r, color.g, color.b);
+        seeds.push(pseudo(strandIndex * 97 + pointIndex * 11));
+        progress.push(t);
+        kinds.push(0.02 + pseudo(strandIndex + pointIndex) * 0.12);
+      });
+    });
+
+    const buffer = new BufferGeometry();
+    buffer.setAttribute("position", new Float32BufferAttribute(positions, 3));
+    buffer.setAttribute("aColor", new Float32BufferAttribute(colors, 3));
+    buffer.setAttribute("aSeed", new Float32BufferAttribute(seeds, 1));
+    buffer.setAttribute("aProgress", new Float32BufferAttribute(progress, 1));
+    buffer.setAttribute("aKind", new Float32BufferAttribute(kinds, 1));
+    return buffer;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+    };
+  }, [geometry]);
+
+  useFrame(({ clock }) => {
+    if (!material.current) return;
+    material.current.uniforms.uTime.value = clock.elapsedTime * 0.42;
+  });
+
+  return (
+    <points geometry={geometry} renderOrder={3}>
+      <shaderMaterial
+        ref={material}
+        vertexShader={signalParticleVertexShader}
+        fragmentShader={signalParticleFragmentShader}
         uniforms={{ uTime: { value: 0 } }}
         transparent
         depthWrite={false}
@@ -793,6 +879,7 @@ export function SynapticField({ claims, selectedClaimId, onSelectClaim }: Synapt
         <NebulaVeil />
         <BackgroundFilaments />
         <SemanticWaveLayer />
+        <AmbientFilamentField />
         <GlowDisc position={sharedMemory} color="#9bf6ff" scale={3.35} pulse={0.2} />
         {agentPositions.map((position, index) => (
           <GlowDisc key={`glow-${index}`} position={position} color={AGENT_COLORS[index % AGENT_COLORS.length].core} scale={1.72 + (index % 3) * 0.18} pulse={index * 0.66} />
