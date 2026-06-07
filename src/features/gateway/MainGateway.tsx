@@ -124,7 +124,7 @@ export function MainGateway({ initialPrompt, onPromptChange, onRoomRequested }: 
               disabled={active}
               placeholder="내 agent에게 무엇을 열어볼까요?"
             />
-            <TactileButton tone="glass" disabled={active}>
+            <TactileButton tone="glass" type="submit" disabled={active}>
               {active ? "Opening" : "Open"}
             </TactileButton>
           </form>

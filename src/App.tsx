@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
+import { DebateRoomView } from "./features/debate/DebateRoom";
 import { MainGateway } from "./features/gateway/MainGateway";
-import { RoomPlaceholder } from "./features/room/RoomPlaceholder";
 
 type AppView = "gateway" | "room";
 
@@ -13,7 +13,7 @@ export default function App() {
   }, [debateQuestion]);
 
   if (view === "room") {
-    return <RoomPlaceholder question={roomTitle} onReturn={() => setView("gateway")} />;
+    return <DebateRoomView question={roomTitle} onReturn={() => setView("gateway")} />;
   }
 
   return (
