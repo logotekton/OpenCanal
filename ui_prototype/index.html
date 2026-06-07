@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenCanal Motion Prototype</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="stage" aria-label="OpenCanal main UI motion prototype">
+      <img class="scene scene-home" src="./assets/alt15-home.png" alt="" />
+      <img class="scene scene-ready" src="./assets/alt25-room-ready.png" alt="" />
+
+      <div class="ambient ambient-a"></div>
+      <div class="ambient ambient-b"></div>
+
+      <div class="agent" aria-hidden="true">
+        <div class="agent-core"></div>
+        <div class="agent-ring"></div>
+      </div>
+
+      <div class="threshold" aria-hidden="true">
+        <div class="threshold-seam"></div>
+        <div class="threshold-glow"></div>
+      </div>
+
+      <div class="particle-field" aria-hidden="true">
+        <span style="--x: 38%; --y: 72%; --d: 0ms"></span>
+        <span style="--x: 43%; --y: 68%; --d: 180ms"></span>
+        <span style="--x: 48%; --y: 63%; --d: 360ms"></span>
+        <span style="--x: 54%; --y: 58%; --d: 540ms"></span>
+        <span style="--x: 59%; --y: 53%; --d: 720ms"></span>
+        <span style="--x: 64%; --y: 49%; --d: 900ms"></span>
+        <span style="--x: 69%; --y: 45%; --d: 1080ms"></span>
+      </div>
+
+      <section class="prompt-shell" aria-label="Prompt">
+        <div class="prompt-text">
+          <span class="prompt-placeholder">내 agent에게 무엇을 열어볼까요?</span>
+          <span class="prompt-query">오픈커널의 첫 Room을 열어줘</span>
+        </div>
+        <button class="submit" type="button">Open</button>
+      </section>
+
+      <div class="status-stack" aria-live="polite">
+        <span>의도 파악</span>
+        <span>근거 경로 탐색</span>
+        <span>Room 준비</span>
+      </div>
+
+      <button class="enter-room" type="button">Room 입장</button>
+
+      <div class="controls">
+        <button type="button" id="replay">Replay transition</button>
+      </div>
+    </main>
+
+    <script src="./script.js"></script>
+  </body>
+</html>

@@ -1,0 +1,390 @@
+version: "0.2"
+name: OpenCanal Core Ontology
+status: draft
+positioning:
+  product_type: verified_agent_platform
+  commercial_entrypoint: business_enterprise_saas_packaging
+  first_market: korea
+  first_product_surface: agent_debate_room
+  second_applied_vertical: bebecien_baby_products
+  consumer_pricing: free
+  paying_customer: business_or_enterprise
+
+enums:
+  agent_type:
+    - business
+    - parent
+    - enterprise
+    - admin
+    - external
+  verification_status:
+    - draft
+    - verified
+    - restricted
+    - suspended
+  verification_level:
+    - L0_simulation
+    - L1_self_declared
+    - L2_owner_verified
+    - L3_business_verified
+    - L4_enterprise_verified
+    - L5_authority_verified
+  room_type:
+    - debate
+    - counsel
+    - commerce
+    - support
+    - enterprise
+    - contract
+  risk_level:
+    - low
+    - medium
+    - high
+    - blocked
+  review_status:
+    - pending
+    - accepted
+    - disputed
+    - weak
+    - needs_more_evidence
+    - out_of_mandate
+    - approved
+    - edited
+    - rejected
+    - blocked
+  receipt_status:
+    - draft
+    - approved
+    - rejected
+    - expired
+    - disputed
+
+entities:
+  Agent:
+    required:
+      - agent_id
+      - agent_type
+      - owner_id
+      - verification_status
+      - permissions
+    fields:
+      agent_id: string
+      agent_type: enum.agent_type
+      owner_id: string
+      display_name: string
+      verification_status: enum.verification_status
+      verification_level: enum.verification_level
+      permissions: MandatePermissionSet
+      ontology_profile_id: string
+      reputation_id: string
+      created_at: datetime
+      updated_at: datetime
+
+  Mandate:
+    required:
+      - mandate_id
+      - agent_id
+      - allowed_actions
+      - human_approval_required
+    fields:
+      mandate_id: string
+      principal_id: string
+      agent_id: string
+      allowed_actions:
+        - can_answer
+        - can_claim
+        - can_debate
+        - can_counterargue
+        - can_recommend
+        - can_compare
+        - can_offer
+        - can_request_human_approval
+        - can_generate_receipt
+      scope: string
+      limits: object
+      expires_at: datetime
+      single_use: boolean
+      human_approval_required: boolean
+
+  BusinessAgentProfile:
+    required:
+      - business_id
+      - agent_id
+      - business_name
+      - products_or_services
+      - policies
+    fields:
+      business_id: string
+      agent_id: string
+      business_name: string
+      business_type: string
+      official_url: string
+      contact: object
+      verification_status: enum.verification_status
+      products_or_services: list.ProductOrService
+      policies: BusinessPolicySet
+      faq: list.FaqItem
+      authority: Mandate
+
+  ProductOrService:
+    required:
+      - item_id
+      - name
+      - category
+      - evidence_sources
+    fields:
+      item_id: string
+      name: string
+      category: string
+      target_age_months_min: integer
+      target_age_months_max: integer
+      use_cases: list.string
+      materials: list.string
+      certificates: list.string
+      safety_cautions: list.string
+      contraindications: list.string
+      price_krw: integer
+      stock_status: string
+      shipping_policy_id: string
+      exchange_refund_policy_id: string
+      evidence_sources: list.EvidenceSource
+      official_url: string
+      last_verified_at: datetime
+
+  ParentIntent:
+    required:
+      - intent_id
+      - question_text
+      - category
+    fields:
+      intent_id: string
+      question_text: string
+      category: string
+      child_age_months: integer
+      purchase_purpose: string
+      budget_max_krw: integer
+      preferred_materials: list.string
+      avoid_materials: list.string
+      gift_context: string
+      desired_shipping_speed: string
+      sensitivity_notes: string
+      public_context_only: boolean
+      risk_level: enum.risk_level
+      created_at: datetime
+
+  Room:
+    required:
+      - room_id
+      - room_type
+      - participants
+      - status
+    fields:
+      room_id: string
+      room_type: enum.room_type
+      category: string
+      participants: list.agent_id
+      status: string
+      interactions: list.AgentInteraction
+      recommendation_offer_ids: list.string
+      receipt_ids: list.string
+      created_at: datetime
+
+  DebateRoom:
+    required:
+      - room_id
+      - debate_question
+      - participants
+      - mandates
+    fields:
+      room_id: string
+      title: string
+      debate_question: string
+      room_type: debate
+      participants: list.agent_id
+      mandates: list.Mandate
+      claims: list.DebateClaim
+      evidence_table: list.EvidenceSource
+      stance_map: object
+      review_events: list.object
+      debate_receipt_id: string
+      status: draft | active | under_review | receipt_ready | closed
+
+  DebateClaim:
+    required:
+      - claim_id
+      - room_id
+      - agent_id
+      - original_claim
+    fields:
+      claim_id: string
+      room_id: string
+      agent_id: string
+      stance: support | oppose | refine | question | neutral
+      original_claim: string
+      interpretation_claim: string
+      ai_application_claim: string
+      evidence: list.EvidenceSource
+      counterarguments: list.string
+      responsibility: string
+      mandate_check: in_mandate | out_of_mandate | unclear
+      risk_level: enum.risk_level
+      review_status: enum.review_status
+      created_at: datetime
+
+  AgentInteraction:
+    required:
+      - interaction_id
+      - room_id
+      - speaker_agent_id
+      - type
+    fields:
+      interaction_id: string
+      room_id: string
+      speaker_agent_id: string
+      target_agent_id: string
+      type: string
+      original_claim: string
+      interpretation_claim: string
+      ai_application_claim: string
+      evidence: list.EvidenceSource
+      responsibility: string
+      risk_level: enum.risk_level
+      created_at: datetime
+
+  RecommendationOffer:
+    required:
+      - offer_id
+      - room_id
+      - business_agent_id
+      - recommended_items
+      - evidence
+    fields:
+      offer_id: string
+      room_id: string
+      business_agent_id: string
+      parent_intent_id: string
+      recommended_items: list.ProductOrService
+      recommendation_reason: string
+      cautions: list.string
+      not_suitable_notes: list.string
+      alternatives: list.ProductOrService
+      evidence: list.EvidenceSource
+      human_review_status: enum.review_status
+      expires_at: datetime
+
+  EvidenceReceipt:
+    required:
+      - receipt_id
+      - room_id
+      - agent_id
+      - evidence_snapshot
+      - status
+    fields:
+      receipt_id: string
+      room_id: string
+      question_text: string
+      parent_intent_snapshot: object
+      agent_id: string
+      recommended_items_snapshot: object
+      evidence_snapshot: object
+      cautions: list.string
+      reviewer_action: enum.review_status
+      transcript_hash: string
+      agent_version: string
+      status: enum.receipt_status
+      created_at: datetime
+
+  DebateReceipt:
+    required:
+      - receipt_id
+      - room_id
+      - debate_question
+      - evidence_snapshot
+      - status
+    fields:
+      receipt_id: string
+      room_id: string
+      debate_question: string
+      participating_agents: list.agent_id
+      mandate_snapshot: object
+      accepted_claims: list.DebateClaim
+      disputed_claims: list.DebateClaim
+      blocked_claims: list.DebateClaim
+      evidence_snapshot: object
+      moderator_summary: string
+      transcript_hash: string
+      agent_versions: object
+      status: enum.receipt_status
+      created_at: datetime
+
+  ReputationGraph:
+    required:
+      - reputation_id
+      - agent_id
+    fields:
+      reputation_id: string
+      agent_id: string
+      response_count: integer
+      receipt_count: integer
+      evidence_coverage_rate: number
+      human_revision_rate: number
+      blocked_response_count: integer
+      dispute_count: integer
+      last_updated: datetime
+
+relations:
+  - Agent HAS Mandate
+  - Agent HAS BusinessAgentProfile
+  - BusinessAgentProfile CONTAINS ProductOrService
+  - ParentIntent STARTS Room
+  - DebateQuestion STARTS DebateRoom
+  - DebateRoom CONTAINS DebateClaim
+  - DebateClaim MAY_COUNTER DebateClaim
+  - DebateClaim REQUIRES EvidenceSource WHEN review_status IS accepted
+  - DebateRoom PRODUCES DebateReceipt
+  - Room HOSTS AgentInteraction
+  - AgentInteraction REQUIRES EvidenceSource
+  - AgentInteraction MAY_GENERATE RecommendationOffer
+  - RecommendationOffer REQUIRES HumanReview WHEN risk_level IS high
+  - HumanReview MAY_CREATE EvidenceReceipt
+  - EvidenceReceipt UPDATES ReputationGraph
+  - DebateReceipt UPDATES ReputationGraph
+  - ExternalAgent REQUIRES Verification BEFORE RoomJoin
+
+safety_rules:
+  debate_room_rules:
+    - unsupported_claim_must_be_labeled_hypothesis
+    - out_of_mandate_claim_must_be_flagged
+    - accepted_claim_requires_evidence_or_moderator_rationale
+    - blocked_claim_cannot_generate_final_recommendation
+  blocked_or_human_required:
+    - medical_diagnosis
+    - allergy_safety_guarantee
+    - developmental_delay_advice
+    - disease_treatment_claim
+    - absolute_safety_claim
+    - below_minimum_age_product_recommendation
+    - refund_exchange_final_approval
+    - unconfirmed_stock_guarantee
+
+saas_plans:
+  starter:
+    price_krw_monthly: 99000
+    includes:
+      - product_faq_agent
+      - limited_monthly_inquiries
+  pro:
+    price_krw_monthly: 299000
+    includes:
+      - rooms
+      - evidence_receipts
+      - human_review
+      - analytics
+  enterprise:
+    price_krw_monthly: 1000000
+    price_note: starts_at
+    includes:
+      - api
+      - multiple_agents
+      - custom_mandates
+      - audit_logs
