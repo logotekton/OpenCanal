@@ -11,7 +11,10 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const q = (url.searchParams.get("q") ?? "").trim().slice(0, 80);
-  const type = url.searchParams.get("type");
+  // 잘못된 enum 값이 Prisma where로 들어가 500이 나지 않도록 화이트리스트 검증
+  const AGENT_TYPES = ["personal", "business", "enterprise", "government", "expert"] as const;
+  const rawType = url.searchParams.get("type");
+  const type = AGENT_TYPES.includes(rawType as never) ? rawType : null;
 
   const agents = await prisma.agent.findMany({
     where: {

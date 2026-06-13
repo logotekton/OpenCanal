@@ -225,6 +225,17 @@ await alice.json(`/api/agents/${aliceAgent.id}/permissions`, {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ can_negotiate: true }),
 });
+// 상대(founder)가 협상 권한을 안 켰으면 여전히 차단되어야 한다 (양측 옵트인)
+const targetGate = await alice.fetch(
+  "/api/rooms",
+  post({ targetAgentId: founderAgent.id, initiatorAgentId: aliceAgent.id, type: "trade" })
+);
+ok("상대 can_negotiate 없이 거래 룸 403", targetGate.status === 403);
+await admin.json(`/api/agents/${founderAgent.id}/permissions`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ can_negotiate: true }),
+});
 const tradeRoom = await alice.json(
   "/api/rooms",
   post({ targetAgentId: founderAgent.id, initiatorAgentId: aliceAgent.id, type: "trade" })
@@ -311,6 +322,8 @@ const directory = await alice.json("/api/agents/directory");
 ok("발견 API가 타 agent 노출", directory.agents.some((a) => a.id === founderAgent.id));
 const dirSearch = await alice.json(`/api/agents/directory?q=${encodeURIComponent("founder")}`);
 ok("발견 API 검색 동작", dirSearch.agents.some((a) => a.id === founderAgent.id));
+const dirBadType = await alice.fetch("/api/agents/directory?type=garbage");
+ok("발견 API 잘못된 type은 500 아님", dirBadType.status === 200);
 
 // F2: 같은 지시 중복 수행 시 정확히 한 번만 성공 (TOCTOU 가드)
 const idemRoom = await alice.json(

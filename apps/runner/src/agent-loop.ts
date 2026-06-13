@@ -55,12 +55,29 @@ export class AgentLoop {
     }
   }
 
+  // 같은 항목이 WS push와 재접속 drain으로 동시에 들어와도 LLM(compose)을 한 번만 돌리도록
+  // in-flight 데듀프. 작업 완료 시 해제하므로, 실패로 서버에 pending이 남아 재드레인되는 경우의
+  // 정상 재시도는 막지 않는다.
+  private inflight = new Set<string>();
+
+  private runOnce(key: string, roomId: string, job: () => Promise<void>): void {
+    if (this.inflight.has(key)) return;
+    this.inflight.add(key);
+    this.queue.enqueue(roomId, async () => {
+      try {
+        await job();
+      } finally {
+        this.inflight.delete(key);
+      }
+    });
+  }
+
   handleMessage(event: RoomMessageEvent): void {
-    this.queue.enqueue(event.roomId, () => this.answer(event));
+    this.runOnce(`msg:${event.messageId}`, event.roomId, () => this.answer(event));
   }
 
   handleInstruction(event: RoomInstructionEvent): void {
-    this.queue.enqueue(event.roomId, () => this.executeInstruction(event));
+    this.runOnce(`ins:${event.instructionId}`, event.roomId, () => this.executeInstruction(event));
   }
 
   private async personaBlock(question: string): Promise<string> {

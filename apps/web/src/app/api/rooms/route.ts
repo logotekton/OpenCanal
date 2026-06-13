@@ -33,10 +33,18 @@ export async function POST(req: Request) {
         { status: 403 }
       );
     }
-    const perms = initiator.permissions as { can_negotiate?: boolean } | null;
-    if (!perms?.can_negotiate) {
+    // 양측 모두 협상 권한을 옵트인해야 한다 — 상대를 동의 없이 협상에 끌어들일 수 없다
+    const initiatorPerms = initiator.permissions as { can_negotiate?: boolean } | null;
+    if (!initiatorPerms?.can_negotiate) {
       return NextResponse.json(
-        { error: "거래 룸을 열려면 agent의 협상 권한(can_negotiate)을 먼저 켜야 합니다. 프로필 → 권한에서 설정하세요." },
+        { error: "거래 룸을 열려면 내 agent의 협상 권한(can_negotiate)을 먼저 켜야 합니다. 프로필 → 권한에서 설정하세요." },
+        { status: 403 }
+      );
+    }
+    const targetPerms = target.permissions as { can_negotiate?: boolean } | null;
+    if (!targetPerms?.can_negotiate) {
+      return NextResponse.json(
+        { error: "상대 agent가 협상 권한을 켜지 않아 거래 룸을 열 수 없습니다." },
         { status: 403 }
       );
     }

@@ -19,6 +19,9 @@ const replySchema = z
     message: "inReplyToId or instructionId required",
   });
 
+// 트랜잭션 내 원자적 claim 실패 신호 — throw로 전체 롤백시킨다
+class ClaimConflict extends Error {}
+
 // Runner posts its agent's message — either an auto-reply or an owner-instructed message.
 // trade 룸이거나 needs_approval이면 인간 승인 대기.
 export async function POST(req: Request) {
@@ -70,59 +73,56 @@ export async function POST(req: Request) {
   // F2/F3: 메시지 생성 + 지시/답장 claim을 한 트랜잭션에서 원자적으로.
   // updateMany({where:{status:"pending"}})로 단 한 번만 성공하도록 보장 — 동시 유입(WS push +
   // inbox 드레인)에 대한 멱등성. count===0이면 이미 처리된 것이므로 전체 롤백 후 409.
-  let conflict = false;
   let messageId: string | null = null;
-  await prisma.$transaction(async (tx) => {
-    if (instructionId) {
-      const claim = await tx.instruction.updateMany({
-        where: { id: instructionId, agentId: device.agentId, roomId, status: "pending" },
-        data: { status: "processed", processedAt: new Date() },
-      });
-      if (claim.count === 0) {
-        conflict = true;
-        return;
+  try {
+    messageId = await prisma.$transaction(async (tx) => {
+      if (instructionId) {
+        const claim = await tx.instruction.updateMany({
+          where: { id: instructionId, agentId: device.agentId, roomId, status: "pending" },
+          data: { status: "processed", processedAt: new Date() },
+        });
+        if (claim.count === 0) throw new ClaimConflict();
       }
-    }
-    if (inReplyToId) {
-      const claim = await tx.message.updateMany({
-        where: { id: inReplyToId, roomId, senderAgentId: { not: device.agentId }, status: "pending" },
-        data: { status: "answered" },
-      });
-      if (claim.count === 0) {
-        conflict = true;
-        return;
+      if (inReplyToId) {
+        const claim = await tx.message.updateMany({
+          where: { id: inReplyToId, roomId, senderAgentId: { not: device.agentId }, status: "pending" },
+          data: { status: "answered" },
+        });
+        if (claim.count === 0) throw new ClaimConflict();
       }
-    }
-    const created = await tx.message.create({
-      data: {
-        roomId,
-        senderAgentId: device.agentId,
-        authorKind: "agent",
-        content,
-        claims: claims ?? undefined,
-        inReplyToId,
-        status: "pending",
-        approval: requiresApproval ? "required" : "none",
-        approvalRequest: requiresApproval
-          ? { create: { agentId: device.agentId, summary: content.slice(0, 200) } }
-          : undefined,
-      },
-      select: { id: true },
+      const created = await tx.message.create({
+        data: {
+          roomId,
+          senderAgentId: device.agentId,
+          authorKind: "agent",
+          content,
+          claims: claims ?? undefined,
+          inReplyToId,
+          status: "pending",
+          approval: requiresApproval ? "required" : "none",
+          approvalRequest: requiresApproval
+            ? { create: { agentId: device.agentId, summary: content.slice(0, 200) } }
+            : undefined,
+        },
+        select: { id: true },
+      });
+      if (instructionId) {
+        await tx.instruction.update({
+          where: { id: instructionId },
+          data: { resultMessageId: created.id },
+        });
+      }
+      return created.id;
     });
-    if (instructionId) {
-      await tx.instruction.update({
-        where: { id: instructionId },
-        data: { resultMessageId: created.id },
-      });
+  } catch (err) {
+    // ClaimConflict → 전체 롤백(부분 claim 커밋 없음) 후 409
+    if (err instanceof ClaimConflict) {
+      return NextResponse.json(
+        { error: "already processed (instruction or reply target)" },
+        { status: 409 }
+      );
     }
-    messageId = created.id;
-  });
-
-  if (conflict || !messageId) {
-    return NextResponse.json(
-      { error: "already processed (instruction or reply target)" },
-      { status: 409 }
-    );
+    throw err;
   }
 
   if (!requiresApproval) {

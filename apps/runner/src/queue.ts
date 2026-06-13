@@ -16,10 +16,13 @@ export class RoomQueue {
     return this.running > 0;
   }
 
-  private capReached(): boolean {
+  // 시간당 캡까지 남은 대기 시간(ms). 0이면 여유 있음.
+  private capWaitMs(): number {
     const hourAgo = Date.now() - 3600_000;
     this.replyTimestamps = this.replyTimestamps.filter((t) => t > hourAgo);
-    return this.replyTimestamps.length >= this.repliesPerHour;
+    if (this.replyTimestamps.length < this.repliesPerHour) return 0;
+    const oldest = this.replyTimestamps[0];
+    return Math.max(0, oldest + 3600_000 - Date.now());
   }
 
   recordReply(): void {
@@ -27,8 +30,13 @@ export class RoomQueue {
   }
 
   enqueue(roomId: string, job: () => Promise<void>): void {
-    if (this.capReached()) {
-      console.warn(`[queue] hourly reply cap (${this.repliesPerHour}) reached — dropping job for room ${roomId}; it stays pending and drains later`);
+    const wait = this.capWaitMs();
+    if (wait > 0) {
+      // 캡 도달: 드롭하지 않고 여유가 생길 때까지 미뤘다 재시도 (지시 유실 방지)
+      console.warn(
+        `[queue] hourly reply cap (${this.repliesPerHour}) reached — deferring job for room ${roomId} by ${Math.ceil(wait / 1000)}s`
+      );
+      setTimeout(() => this.enqueue(roomId, job), wait + 100);
       return;
     }
     const q = this.queues.get(roomId) ?? [];
