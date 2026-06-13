@@ -13,7 +13,7 @@ export async function GET(req: Request) {
   });
   const roomIds = rooms.map((r) => r.roomId);
 
-  const [messages, instructions, sources] = await Promise.all([
+  const [messages, instructions, sources, capabilities] = await Promise.all([
     prisma.message.findMany({
       where: {
         roomId: { in: roomIds },
@@ -50,11 +50,16 @@ export async function GET(req: Request) {
       where: { agentId: device.agentId },
       select: { id: true, kind: true, config: true, status: true },
     }),
+    prisma.agentCapability.findMany({
+      where: { agentId: device.agentId, enabled: true },
+      select: { key: true, label: true, description: true, requiresApproval: true },
+    }),
   ]);
 
   return NextResponse.json({
     agentId: device.agentId,
     sources,
+    capabilities,
     messages: messages.map((m) => ({
       type: "room.message" as const,
       roomId: m.roomId,

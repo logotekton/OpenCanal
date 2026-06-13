@@ -11,6 +11,7 @@ import type {
 export interface InboxResponse {
   agentId: string;
   sources: { id: string; kind: string; config: Record<string, unknown>; status: string }[];
+  capabilities?: { key: string; label: string; description?: string | null; requiresApproval: boolean }[];
   messages: RoomMessageEvent[];
   instructions: RoomInstructionEvent[];
 }

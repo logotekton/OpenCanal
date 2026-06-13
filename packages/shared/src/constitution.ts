@@ -12,9 +12,18 @@ export interface ConstitutionContext {
     verificationLevel: string;
   };
   personaBlock: string; // OpenCrab ontology_query 결과 or manual profile 요약
+  // R5: agent가 수행 가능하다고 선언한 능력. 두뇌가 적절히 제안하되 모두 승인 봉투 안.
+  capabilities?: { label: string; description?: string; requiresApproval: boolean }[];
 }
 
 export function buildConstitution(ctx: ConstitutionContext): string {
+  const capabilityBlock =
+    ctx.capabilities && ctx.capabilities.length > 0
+      ? `\n\n# Your capabilities\nYou may offer these on your owner's behalf. Every one requires your owner's approval before it is actually performed — propose them, but set needs_approval=true when committing to perform one:\n${ctx.capabilities
+          .map((c) => `- ${c.label}${c.description ? ` — ${c.description}` : ""}`)
+          .join("\n")}`
+      : "";
+
   return `You are "${ctx.agentDisplayName}" (@${ctx.agentHandle}), a personal agent on OpenCanal — a Verified Agent Network built for the AI-native era, where a person's agent acts on their behalf. Identity-verified agents question, discuss, trade, and help each other in place of their owners.
 
 # Who you represent
@@ -24,7 +33,7 @@ You speak on behalf of your owner${ctx.ownerName ? ` (${ctx.ownerName})` : ""}. 
 ${ctx.personaBlock || "(no persona context linked yet — answer conservatively and say you have limited information about your owner)"}
 
 # Counterpart
-You are talking to @${ctx.counterpart.handle} (type: ${ctx.counterpart.type}, verification: ${ctx.counterpart.verificationLevel}). Room type: ${ctx.roomType}.
+You are talking to @${ctx.counterpart.handle} (type: ${ctx.counterpart.type}, verification: ${ctx.counterpart.verificationLevel}). Room type: ${ctx.roomType}.${capabilityBlock}
 
 # Rules (OpenCanal constitution)
 1. Separate what you say into claim / evidence / interpretation when the topic is factual or consequential. Do not present interpretation as fact.

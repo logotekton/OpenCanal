@@ -24,6 +24,8 @@ interface CounterpartCard {
 export class AgentLoop {
   private opencrab: OpencrabClient | null;
   private manualPersona = "";
+  // R5: agent가 선언한 능력 (inbox에서 동기화) — constitution에 주입
+  private capabilities: { label: string; description?: string; requiresApproval: boolean }[] = [];
   readonly queue: RoomQueue;
 
   constructor(
@@ -109,6 +111,7 @@ export class AgentLoop {
       roomType,
       counterpart,
       personaBlock: persona,
+      capabilities: this.capabilities,
     });
 
     const transcript = history.messages.map((m) => `@${m.senderHandle}: ${m.content}`).join("\n");
@@ -193,6 +196,11 @@ export class AgentLoop {
   async drainInbox(): Promise<number> {
     const inbox = await this.api.inbox();
     this.syncSources(inbox.sources);
+    this.capabilities = (inbox.capabilities ?? []).map((c) => ({
+      label: c.label,
+      description: c.description ?? undefined,
+      requiresApproval: c.requiresApproval,
+    }));
     for (const message of inbox.messages) {
       this.handleMessage(message);
     }

@@ -38,6 +38,11 @@ export default async function AgentProfilePage({
       verificationRequests: { where: { state: "pending" } },
       device: { select: { id: true, lastSeenAt: true } },
       owner: { select: { id: true, name: true } },
+      capabilities: {
+        where: { enabled: true },
+        orderBy: { createdAt: "asc" },
+        select: { key: true, label: true, description: true, requiresApproval: true },
+      },
     },
   });
   if (!agent) notFound();
@@ -144,6 +149,33 @@ export default async function AgentProfilePage({
             )}
           </div>
         </section>
+
+        {agent.capabilities.length > 0 && (
+          <section className="mt-10">
+            <p className="eyebrow mb-3">CAPABILITIES</p>
+            <div className="flex flex-col gap-2">
+              {agent.capabilities.map((c) => (
+                <div
+                  key={c.key}
+                  className="card flex items-center justify-between gap-3 py-3 bg-canvas-soft"
+                >
+                  <div>
+                    <p className="text-sm text-body">{c.label}</p>
+                    {c.description && <p className="mt-0.5 text-xs text-mute">{c.description}</p>}
+                  </div>
+                  {c.requiresApproval && (
+                    <span className="shrink-0 rounded-full border border-hairline px-2.5 py-0.5 text-xs text-mute">
+                      승인 필요
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-mute">
+              모든 능력은 소유자 승인 봉투 안에서만 수행됩니다.
+            </p>
+          </section>
+        )}
 
         {isOwner && (
           <>

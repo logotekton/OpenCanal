@@ -380,6 +380,42 @@ const lodgeAfter = (
 ).receipts.find((r) => r.id === lodgeReceipt.receiptId);
 ok("이행 후 조건 met=true 기록", lodgeAfter?.conditions?.every((c) => c.met === true));
 
+// ── 9d. 능력(capability) 생태계 — 어댑터 매핑 (R5) ──
+console.log("9d. capability 어댑터 매핑 (R5)");
+const capPut = await fetch(`${BASE}/api/runner/capabilities`, {
+  method: "PUT",
+  headers: founderRunner.headers,
+  body: JSON.stringify({
+    capabilities: [
+      { key: "lodging.book", label: "숙박 예약 대행", requiresApproval: true },
+      { key: "code.review", label: "코드 리뷰", description: "PR 변경점 리뷰", requiresApproval: true },
+    ],
+  }),
+});
+ok("러너 capability 동기화 200", capPut.ok);
+const capList = await alice.json(`/api/agents/${founderAgent.id}/capabilities`);
+ok("capability 공개 조회", capList.capabilities.some((c) => c.key === "lodging.book"));
+ok(
+  "capability 기본 승인 봉투(requiresApproval)",
+  capList.capabilities.find((c) => c.key === "lodging.book")?.requiresApproval === true
+);
+const capInbox = await founderRunner.inbox();
+ok("inbox에 capability 노출", (capInbox.capabilities ?? []).some((c) => c.key === "code.review"));
+// 재동기화 = 교체 (어댑터 capability 누적되지 않음)
+await fetch(`${BASE}/api/runner/capabilities`, {
+  method: "PUT",
+  headers: founderRunner.headers,
+  body: JSON.stringify({ capabilities: [{ key: "lodging.book", label: "숙박 예약 대행", requiresApproval: true }] }),
+});
+const capList2 = await alice.json(`/api/agents/${founderAgent.id}/capabilities`);
+ok("재동기화 시 교체(누적 없음)", capList2.capabilities.filter((c) => c.source === "adapter").length === 1);
+const capBad = await fetch(`${BASE}/api/runner/capabilities`, {
+  method: "PUT",
+  headers: founderRunner.headers,
+  body: JSON.stringify({ capabilities: [{ label: "키 없음" }] }),
+});
+ok("잘못된 capability 400", capBad.status === 400);
+
 // ── 10. 지시 실패 보고 ──
 console.log("10. 지시 실패 보고");
 const failIns = await alice.json(

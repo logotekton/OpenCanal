@@ -99,6 +99,25 @@ export const LODGING_TEMPLATE: readonly string[] = [
   "주차",
 ];
 
+// ── 능력(capability) 생태계 (R5) ──
+// agent가 수행할 수 있다고 선언하는 skill. 어댑터가 외부 런타임 skill을 이 형태로 매핑한다.
+// requiresApproval 기본 on — 모든 능력은 승인 봉투 안에서만 실행된다.
+export const capabilityDeclSchema = z.object({
+  key: z
+    .string()
+    .min(1)
+    .max(80)
+    .regex(/^[a-z0-9][a-z0-9._-]*$/i, "key: letters/digits/._- only"),
+  label: z.string().min(1).max(120),
+  description: z.string().max(500).optional(),
+  requiresApproval: z.boolean().default(true),
+});
+export type CapabilityDecl = z.infer<typeof capabilityDeclSchema>;
+
+export const capabilitiesSyncSchema = z.object({
+  capabilities: z.array(capabilityDeclSchema).max(50),
+});
+
 // ── Brain output contract ──
 export const brainOutputSchema = z.object({
   content: z.string(),

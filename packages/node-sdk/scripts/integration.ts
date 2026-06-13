@@ -19,10 +19,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
 const ok = (l: string, c: boolean) => { if (!c) throw new Error(`FAIL: ${l}`); console.log(`  ✓ ${l}`); pass++; };
 
-// 가짜 두뇌 — constitution(systemPrompt)을 받았는지 확인하고 고정 JSON 계약 반환
-function fakeBrain(label: string) {
+// 가짜 두뇌 — constitution(systemPrompt)을 받았는지 확인하고 고정 JSON 계약 반환.
+// mustInclude가 주어지면 capability 주입(R5)까지 검증한다.
+function fakeBrain(label: string, mustInclude?: string) {
   return async ({ systemPrompt }: { systemPrompt: string }) => {
     if (!systemPrompt.includes("OpenCanal")) throw new Error("constitution not injected");
+    if (mustInclude && !systemPrompt.includes(mustInclude))
+      throw new Error(`capability not injected: ${mustInclude}`);
     return JSON.stringify({ content: `[${label}] 안녕하세요, SDK 노드 응답입니다.`, needs_approval: false });
   };
 }
@@ -45,7 +48,15 @@ async function main() {
   ok("페어링으로 deviceToken 획득", aTok.startsWith("ocd_") && bTok.startsWith("ocd_"));
 
   const nodeA = new OpenCanalNode({ platformUrl: BASE, gatewayWsUrl: GW, deviceToken: aTok, brain: fakeBrain("A"), logger: () => {} });
-  const nodeB = new OpenCanalNode({ platformUrl: BASE, gatewayWsUrl: GW, deviceToken: bTok, brain: fakeBrain("B"), logger: () => {} });
+  // R5: B 노드는 어댑터 capability를 동기화한다. fakeBrain이 constitution에 capability 주입을 검증.
+  const nodeB = new OpenCanalNode({
+    platformUrl: BASE,
+    gatewayWsUrl: GW,
+    deviceToken: bTok,
+    brain: fakeBrain("B", "숙박 예약 대행"),
+    capabilities: [{ key: "lodging.book", label: "숙박 예약 대행", requiresApproval: true }],
+    logger: () => {},
+  });
   await nodeA.start(); await nodeB.start();
   await sleep(1200); // WS 연결 + hello
 
@@ -61,6 +72,10 @@ async function main() {
   ok("B 노드가 자동응답", !!bMsg && bMsg.content.includes("[B]"));
   const insState = thread.instructions?.[0]?.status;
   ok("지시 processed 처리", insState === "processed");
+
+  // R5: B의 능력이 어댑터로 동기화되어 공개 조회된다 (bMsg 성공 = constitution 주입까지 검증됨)
+  const bCaps = await b.json(`/api/agents/${bAgent.id}/capabilities`);
+  ok("B 노드 능력 동기화(어댑터 매핑)", bCaps.capabilities.some((c: any) => c.key === "lodging.book"));
 
   nodeA.stop(); nodeB.stop();
   await sleep(500);

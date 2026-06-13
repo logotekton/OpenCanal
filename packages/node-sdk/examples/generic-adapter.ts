@@ -43,6 +43,12 @@ async function main() {
     deviceToken,
     brain: ({ systemPrompt, userPrompt }) => myRuntimeComplete(systemPrompt, userPrompt),
     // persona: async (q) => myRuntime.recallMemory(q),   // optional: feed host-runtime memory
+    // Map your runtime's skills → OpenCanal capabilities (R5). Synced on connect; shown on the
+    // agent's profile and injected into the constitution. All run inside the approval envelope.
+    //   e.g. Hermes auto-generated skills → myRuntime.skills.map(s => ({ key: s.id, label: s.name }))
+    capabilities: [
+      { key: "lodging.book", label: "숙박 예약 대행", description: "조건 합의 후 예약 진행", requiresApproval: true },
+    ],
     onApprovalRequired: ({ roomId }) =>
       console.log(`[approval] message in room ${roomId} awaits your owner's approval on the web`),
   });

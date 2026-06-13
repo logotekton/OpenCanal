@@ -21,6 +21,7 @@ import {
   type RoomInstructionEvent,
   type ServerEvent,
   type ManualProfileConfig,
+  type CapabilityDecl,
 } from "@opencanal/shared";
 
 export interface BrainInput {
@@ -40,6 +41,11 @@ export interface OpenCanalNodeOptions {
   deviceToken: string;
   brain: BrainFn;
   persona?: PersonaFn;
+  /**
+   * Map the host runtime's skills to OpenCanal capabilities (R5). Synced on connect.
+   * All capabilities live inside the approval envelope (requiresApproval defaults true).
+   */
+  capabilities?: CapabilityDecl[];
   /** Called when a message is held for the owner's approval (trade / commitment). */
   onApprovalRequired?: (info: { roomId: string; content: string }) => void;
   logger?: (msg: string) => void;
@@ -49,6 +55,7 @@ interface InboxResponse {
   agentId: string;
   handle?: string;
   sources: { id: string; kind: string; config: Record<string, unknown>; status: string }[];
+  capabilities?: { key: string; label: string; description?: string | null; requiresApproval: boolean }[];
   messages: RoomMessageEvent[];
   instructions: RoomInstructionEvent[];
 }
@@ -80,6 +87,7 @@ export class OpenCanalNode {
   private busy = 0;
   private inflight = new Set<string>();
   private manualPersona = "";
+  private capabilities: { label: string; description?: string; requiresApproval: boolean }[] = [];
   private handle = "agent";
   private displayName = "agent";
 
@@ -111,7 +119,10 @@ export class OpenCanalNode {
       this.heartbeat = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "heartbeat", busy: this.busy > 0 }));
       }, 20_000);
-      this.drain().catch((e) => this.log(`[node] drain failed: ${e.message}`));
+      // R5: 호스트 런타임 skill을 OpenCanal capability로 동기화한 뒤 inbox를 드레인한다
+      this.syncCapabilities()
+        .catch((e) => this.log(`[node] capability sync failed: ${e.message}`))
+        .finally(() => this.drain().catch((e) => this.log(`[node] drain failed: ${e.message}`)));
     });
     ws.on("message", (raw) => {
       let ev: ServerEvent;
@@ -165,6 +176,18 @@ export class OpenCanalNode {
     return r.json() as Promise<InboxResponse>;
   }
 
+  /** Map the host runtime's skills → OpenCanal capabilities (replace on each connect). */
+  private async syncCapabilities(): Promise<void> {
+    if (!this.o.capabilities || this.o.capabilities.length === 0) return;
+    const r = await fetch(`${this.o.platformUrl}/api/runner/capabilities`, {
+      method: "PUT",
+      headers: this.authH(),
+      body: JSON.stringify({ capabilities: this.o.capabilities }),
+    });
+    if (!r.ok) throw new Error(`capabilities ${r.status}`);
+    this.log(`[node] synced ${this.o.capabilities.length} capabilit(ies)`);
+  }
+
   private async drain(): Promise<void> {
     const inbox = await this.inbox();
     const manual = inbox.sources.find((s) => s.kind === "manual_profile");
@@ -174,6 +197,11 @@ export class OpenCanalNode {
         .filter(Boolean)
         .join("\n");
     }
+    this.capabilities = (inbox.capabilities ?? []).map((c) => ({
+      label: c.label,
+      description: c.description ?? undefined,
+      requiresApproval: c.requiresApproval,
+    }));
     for (const m of inbox.messages) void this.runOnce(`msg:${m.messageId}`, () => this.answer(m));
     for (const i of inbox.instructions) void this.runOnce(`ins:${i.instructionId}`, () => this.execInstruction(i));
   }
@@ -203,6 +231,7 @@ export class OpenCanalNode {
       roomType: roomType as RoomMessageEvent["roomType"],
       counterpart,
       personaBlock: persona,
+      capabilities: this.capabilities,
     });
     const userPrompt = [transcript && `# Conversation so far\n${transcript}`, tail].filter(Boolean).join("\n\n");
     const raw = await this.o.brain({ systemPrompt, userPrompt, roomId, roomType });
