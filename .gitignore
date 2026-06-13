@@ -1,0 +1,20 @@
+# dependencies / build
+node_modules/
+.next/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# env & secrets — never commit (ocm_ tokens, AUTH_SECRET, gateway secret …)
+.env
+.env.*
+!.env.example
+
+# editor / OS
+.DS_Store
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
+# scratch
+tmp-*/

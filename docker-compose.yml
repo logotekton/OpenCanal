@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: opencanal-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opencanal
+      POSTGRES_PASSWORD: opencanal_dev
+      POSTGRES_DB: opencanal
+    ports:
+      - "5433:5432"
+    volumes:
+      - opencanal_pgdata:/var/lib/postgresql/data
+
+volumes:
+  opencanal_pgdata:

@@ -1,0 +1,380 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────── Enums ─────────────────────────
+
+enum UserRole {
+  user
+  admin
+}
+
+enum AgentType {
+  personal
+  business
+  enterprise
+  government
+  expert
+}
+
+enum AgentStatus {
+  online
+  away
+  offline
+}
+
+// v1 계획서의 L0~L5 등급 체계 유지. MVP 실사용은 L0~L2 (L2+ = 주황 딱지)
+enum VerificationLevel {
+  L0
+  L1
+  L2
+  L3
+  L4
+  L5
+}
+
+enum RequestState {
+  pending
+  approved
+  rejected
+}
+
+enum SourceStatus {
+  pending
+  linked
+  error
+}
+
+enum RoomType {
+  question
+  discussion
+  trade
+  help
+}
+
+enum RoomStatus {
+  open
+  closed
+}
+
+enum ParticipantRole {
+  initiator
+  responder
+}
+
+enum AuthorKind {
+  agent
+  human
+  system
+}
+
+enum MessageStatus {
+  pending
+  delivered
+  answered
+  failed
+}
+
+enum ApprovalState {
+  none
+  required
+  approved
+  rejected
+}
+
+enum InstructionStatus {
+  pending
+  processed
+  failed
+}
+
+// ───────────────────────── Auth (Auth.js) ─────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  role          UserRole  @default(user)
+  createdAt     DateTime  @default(now())
+
+  accounts      Account[]
+  sessions      Session[]
+  agents        Agent[]
+  notifications Notification[]
+
+  reviewedRequests VerificationRequest[] @relation("reviewer")
+  approvedBadges   VerificationBadge[]   @relation("badgeApprover")
+  acceptedReceipts ContractReceipt[]     @relation("receiptAcceptor")
+}
+
+// 사용자 알림 — 대리 구조의 신경계. 승인 요청/지시 실패/검증 결과/거래 확정이 흐른다.
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  kind      String // approval_required | instruction_failed | verification_reviewed | receipt_created
+  title     String
+  body      String?
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ───────────────────────── Agents ─────────────────────────
+
+model Agent {
+  id          String      @id @default(cuid())
+  ownerId     String
+  type        AgentType   @default(personal)
+  handle      String      @unique
+  displayName String
+  bio         String?
+  status      AgentStatus @default(offline)
+
+  lastHeartbeatAt   DateTime?
+  verificationLevel VerificationLevel @default(L0)
+
+  // v1 Mandate 축약형: can_speak/can_advise 기본 on, can_negotiate/can_commit/can_spend 기본 off
+  permissions Json @default("{\"can_speak\":true,\"can_advise\":true,\"can_negotiate\":false,\"can_commit\":false,\"can_spend\":false}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner                User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  badge                VerificationBadge?
+  verificationRequests VerificationRequest[]
+  sources              AgentSource[]
+  device               RunnerDevice?
+  pairings             DevicePairing[]
+  participations       RoomParticipant[]
+  messages             Message[]
+  approvalRequests     ApprovalRequest[]
+  instructions         Instruction[]
+
+  @@index([ownerId])
+  @@index([type, verificationLevel])
+}
+
+model VerificationBadge {
+  id           String            @id @default(cuid())
+  agentId      String            @unique
+  level        VerificationLevel
+  kind         AgentType
+  approvedById String?
+  approvedAt   DateTime          @default(now())
+  evidenceNote String?
+
+  agent      Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  approvedBy User? @relation("badgeApprover", fields: [approvedById], references: [id])
+}
+
+model VerificationRequest {
+  id             String            @id @default(cuid())
+  agentId        String
+  requestedLevel VerificationLevel
+  evidence       Json // { note, businessRegistration?, officialUrl?, contact? }
+  state          RequestState      @default(pending)
+  reviewerId     String?
+  reviewedAt     DateTime?
+  reviewNote     String?
+  createdAt      DateTime          @default(now())
+
+  agent    Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  reviewer User? @relation("reviewer", fields: [reviewerId], references: [id])
+
+  @@index([state])
+}
+
+// 플러그인式 페르소나 소스. kind는 코드 레지스트리 키 (opencrab_pack | manual_profile | ...)
+// config에는 비밀이 아닌 메타데이터만 — ocm_ 토큰은 절대 저장하지 않는다 (러너 로컬 전용)
+model AgentSource {
+  id        String       @id @default(cuid())
+  agentId   String
+  kind      String
+  config    Json // opencrab_pack: { packId, tenantId?, manifestHash?, nodeCount?, spaces?, attestedAt? } / manual_profile: { tastes, hobbies, skills, ... }
+  status    SourceStatus @default(pending)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+}
+
+// ───────────────────────── Runner ─────────────────────────
+
+model RunnerDevice {
+  id            String    @id @default(cuid())
+  agentId       String    @unique
+  tokenHash     String    @unique // SHA-256(deviceToken) — 원문은 러너만 보유
+  name          String?
+  runnerVersion String?
+  lastSeenAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+}
+
+model DevicePairing {
+  id         String    @id @default(cuid())
+  agentId    String
+  code       String    @unique // 8자리 페어링 코드
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+}
+
+// ───────────────────────── Rooms & Messages ─────────────────────────
+
+model Room {
+  id          String     @id @default(cuid())
+  type        RoomType   @default(question)
+  status      RoomStatus @default(open)
+  title       String?
+  createdById String // User id
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  participants RoomParticipant[]
+  messages     Message[]
+  instructions Instruction[]
+  receipts     ContractReceipt[]
+}
+
+// 사용자 → 자기 agent에 대한 지시. 사용자는 상대 agent와 직접 대화하지 않는다 —
+// agent가 지시를 해석해 자기 목소리로 메시지를 작성/전송한다.
+model Instruction {
+  id              String            @id @default(cuid())
+  roomId          String
+  agentId         String // 지시받는 agent (지시한 사용자의 소유)
+  content         String
+  status          InstructionStatus @default(pending)
+  resultMessageId String? // agent가 이 지시로 작성한 메시지
+  error           String?
+  createdAt       DateTime          @default(now())
+  processedAt     DateTime?
+
+  room  Room  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, status])
+  @@index([roomId, createdAt])
+}
+
+model RoomParticipant {
+  roomId   String
+  agentId  String
+  role     ParticipantRole
+  joinedAt DateTime        @default(now())
+
+  room  Room  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, agentId])
+  @@index([agentId])
+}
+
+model Message {
+  id            String        @id @default(cuid())
+  roomId        String
+  senderAgentId String
+  authorKind    AuthorKind    @default(agent)
+  content       String
+  // v1 Philosophy-for-AI 최소형: [{type: claim|evidence|interpretation|responsibility, text}]
+  claims        Json?
+  status        MessageStatus @default(pending)
+  approval      ApprovalState @default(none)
+  inReplyToId   String?
+  createdAt     DateTime      @default(now())
+
+  room            Room             @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender          Agent            @relation(fields: [senderAgentId], references: [id], onDelete: Cascade)
+  inReplyTo       Message?         @relation("replies", fields: [inReplyToId], references: [id])
+  replies         Message[]        @relation("replies")
+  approvalRequest ApprovalRequest?
+  receipt         ContractReceipt?
+
+  @@index([roomId, createdAt])
+  @@index([senderAgentId, status])
+}
+
+model ApprovalRequest {
+  id        String       @id @default(cuid())
+  messageId String       @unique
+  agentId   String
+  summary   String
+  state     RequestState @default(pending)
+  decidedAt DateTime?
+  createdAt DateTime     @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  agent   Agent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, state])
+}
+
+// 합의의 기록 — trade 룸에서 상대 소유자가 "이 조건으로 확정"하면 생성되는 영수증.
+// v1 BotContract Evidence Package의 최소형: 제안 메시지 + 대화 transcript hash.
+model ContractReceipt {
+  id                String   @id @default(cuid())
+  roomId            String
+  proposalMessageId String   @unique // 확정된 제안 (승인되어 전달된 agent 메시지)
+  acceptedById      String // 확정한 사용자 (제안 받은 쪽 소유자)
+  transcriptHash    String // 확정 시점까지의 전달된 대화 SHA-256
+  terms             String // 제안 메시지 본문 스냅샷 (제안이 수정되어도 영수증은 불변)
+  createdAt         DateTime @default(now())
+
+  room       Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  proposal   Message @relation(fields: [proposalMessageId], references: [id], onDelete: Cascade)
+  acceptedBy User    @relation("receiptAcceptor", fields: [acceptedById], references: [id])
+
+  @@index([roomId])
+}

@@ -1,0 +1,28 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@opencanal/web", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "gateway",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@opencanal/gateway", "dev"],
+      "port": 8787
+    },
+    {
+      "name": "postgres",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up", "postgres"],
+      "port": 5433
+    },
+    {
+      "name": "runner",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "opencanal-runner", "dev", "start"]
+    }
+  ]
+}
