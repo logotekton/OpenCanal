@@ -1,88 +1,53 @@
-# 목표 v2: OpenCanal 깊이 개선 + 병렬 테스트 루프 (2026-06-12 시작)
+# 목표 v3: 로드맵 R0~R5 완수 (2026-06-13 시작)
 
-> **세션이 끊겨도 이 파일을 읽고 이어서 작업한다.** (스케줄 태스크 `opencanal-goal-resume`가 5시간 주기로 재개)
-> 작업 디렉토리: C:\Logotekton\OpenCanal · 서버: web :3000(preview), gateway :8787, postgres :5433(docker)
-> 이전 목표(v1: 배포 준비+지시 구조+Tesla 디자인)는 완료됨 — git 없음, 문서가 유일한 기록.
+> **세션이 끊겨도 이 파일 + docs/ROADMAP.md를 읽고 이어서 작업한다.** (cron `opencanal-goal-resume` 5시간 주기)
+> 작업 디렉토리: C:\Logotekton\OpenCanal. 서버: web :3000, gateway :8787, postgres :5433(docker).
+> git: main 단일 흐름 + review-head(PR #1, 빈 base 8b8917e에 re-parent). 커밋 메시지는 `git commit -F <file>`로(헤어 here-string 금지).
 
-## 미션
+## 미션 / 전략
+AGI 시대 개인 agent가 개인을 대신한다 → 검증된 agent 플랫폼. 경쟁(Moltbot/OpenClaw/Hermes)과 런타임으로 경쟁하지 않고, 그들이 OpenCanal 검증 노드가 되게 한다(R2 어댑터). 상세: docs/ROADMAP.md, 메모리 strategy-positioning.
 
-> AI native, AGI 시대가 오면 개인의 agent가 개인을 대신한다.
-> 그 미래에 대비한 **검증된 agent 플랫폼**이 OpenCanal이다.
+## 베이스라인 (완료)
+MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(41) + apps/gateway/scripts/smoke2.mjs(10). 검증 루틴: `next build` + tsc(gateway/runner) + tsup + 두 smoke. 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d.
 
-## 진행 방식 (사용자 지시)
+## 체크리스트
 
-1. 계획대로 개선 + refactoring 루프 → **배포 가능 단계를 객관 기준으로 판단**
-2. 도달하면 **sub agent를 병렬로 띄워 OpenCanal 테스트**
-3. 테스트 리뷰 → 개선점 도출 → 적용
-4. 5시간 토큰 만료 시 resume 자동화로 계속
+### R0 — 라이브 증명 ✅ (docs/R0-live-proof.md)
+- [x] 실제 Claude 두뇌로 두 agent 룸 대화 — apps/runner/scripts/live-proof.ts, 4턴 자연 대화, constitution 준수(커밋 보류·환각 억제) 확인
+- [~] OpenCrab 페르소나 — 토큰 주입 경로 구현됨, manual_profile로 증명. 사용자 ocm_ 토큰으로 재실행 시 완료
+- [x] transcript 기록
 
-## 배포 가능 판단의 객관 기준 (Definition of Deployable) — ✅ 전 항목 충족 (2026-06-12)
+### R1 — 배포·마찰
+- [ ] 텔레그램 브리지 (소유자↔자기 agent 채널: 지시/승인/알림). 봇 토큰은 env. apps/bridge 또는 web webhook
+- [ ] 디렉토리 UI 페이지 (/directory) — 검색·딱지·presence (API 이미 존재)
+- [ ] 러너 원라이너/트레이 — 최소 README 설치 가이드 + npx 경로 확인
+- [ ] 검증: 빌드 + smoke
 
-- [x] D1. 빌드 전부 클린: next build ✓ + tsc(gateway/runner) ✓ + tsup ✓ + Docker 이미지 2종(web=0, gateway=0) ✓
-- [x] D2. 스모크 전부 통과: smoke1 35개 + smoke2 10개 (production 빌드 기준)
-- [x] D3. 알림 작동: 승인요청/지시실패/검증결과/거래확정 — 스모크 13단계에서 확인
-- [x] D4. 권한 집행: trade는 L1+ & can_negotiate (스모크 9단계 "can_negotiate 없이 403" 확인)
-- [x] D5. 남용 방어: rate limit(룸당 5/시간당 30), 룸 닫기, cross-user(자기 제안 확정 403, 타인 승인 403) 확인
-- [x] D6. 합의의 기록: ContractReceipt + transcript hash + /receipts/:id (스모크 9단계)
-- [x] D7. 평판 v0: 프로필 TRACK RECORD (메시지 수/승인률/확정 거래)
+### R2 — 노드 프로토콜 & 어댑터 (최대 베팅) ✅ 핵심 완료
+- [x] docs/NODE_PROTOCOL.md — 페어링/WS/inbox/reply/instruction + 멱등성·승인 계약 명세
+- [x] packages/node-sdk — OpenCanalNode(pair/connect/drain/compose/reply) + in-flight 데듀프 + 409 멱등 처리
+- [x] 첫 어댑터 예제 — packages/node-sdk/examples/generic-adapter.ts (Moltbot/Hermes/커스텀 wiring 지점 1개)
+- [x] constitution 주입 — SDK가 buildConstitution()을 모든 작성에 강제, fakeBrain이 주입 검증
+- [x] 검증: SDK/shared/runner tsc 클린, integration.ts 4개 통과(두 SDK 노드 WS로 지시→메시지→자동응답)
+- [x] DRY: 파싱 단일출처 parseBrainOutputText를 @opencanal/shared로, 러너 adapter가 위임
+- [ ] (선택, 후속) 러너 자체를 node-sdk 위로 재구현 — 현재는 별도 구현 공존
 
-> 배포 시 주의: web은 standalone 빌드이므로 프로덕션 실행은 `node apps/web/.next/standalone/apps/web/server.js` (또는 Docker 이미지). `next start`는 경고와 함께 동작하지만 권장 아님.
+### R3 — 학습 메모리 & 평판 v1
+- [ ] 룸 결과/ContractReceipt를 OpenCrab에 ingest (러너 측, ocm_ 있을 때)
+- [ ] 평판 v1: 응답률/승인률/이행률/분쟁률 계산 (현재 평판 v0 확장)
+- [ ] 프로필 신뢰 신호 강화
+- [ ] 검증: 스모크에 평판 케이스
 
-## Phase 체크리스트
+### R4 — 말→성사 (Commerce Room)
+- [ ] BotContract 이행 단계 (Offer/CounterOffer는 이미 trade 룸+Receipt로 일부; 조건표·이행상태 추가)
+- [ ] 숙박/예약 vertical 최소형 (v1 계획서 Phase 4)
+- [ ] can_spend off 유지, 승인 게이트 안에서 이행 기록
+- [ ] 검증: 스모크
 
-### Phase 1 — 실전 신뢰성 (D3, D4, D5)
-- [ ] Notification 모델 + 마이그레이션 (userId, kind, title, href, readAt)
-- [ ] 알림 생성 지점: 승인 요청 생성 시(소유자), 지시 실패 시(소유자), 검증 심사 결과(소유자), 거래 합의 확정(양측)
-- [ ] 헤더 벨 + /notifications 페이지 (읽음 처리)
-- [ ] agent 생성 시 L1 부여 (이메일 로그인 = 이메일 검증 완료이므로) — L0는 미인증 예약
-- [ ] trade 룸 게이트: 양측 L1+ AND 개시 agent permissions.can_negotiate=true
-- [ ] agent 설정에서 can_negotiate 토글 UI (소유자)
-- [ ] 지시 rate limit: 룸당 pending 5개, 사용자당 시간당 30개
-- [ ] 룸 닫기: PATCH /api/rooms/:id (참여 소유자) — closed 룸은 지시/메시지 거부
-- [ ] 스모크 확장: 보안 케이스 (타인 룸 지시 403, 타인 승인 403, L0 trade 차단, rate limit, closed 룸)
-
-### Phase 2 — 미션 실체화 (D6, D7)
-- [ ] ContractReceipt 모델: roomId, proposalMessageId, acceptedByUserId, terms?, transcriptHash, createdAt
-- [ ] trade 룸에서 승인되어 전달된 상대 agent 메시지에 "이 조건으로 확정" 버튼 (상대 소유자) → Receipt 생성 + 양측 알림 + 룸 system 메시지
-- [ ] /receipts/:id 페이지 (양측 소유자만, transcript hash 표시)
-- [ ] 평판 v0: 프로필에 응답 수 / 승인률 / 확정 거래 수 (쿼리 계산, 모델 추가 없이)
-- [ ] 스모크: Receipt 생성/조회/권한
-
-### Phase 3 — Refactoring 루프 (D1, D2)
-- [ ] API 라우트 공통 패턴 추출 (auth 가드, 에러 응답) — 중복 제거
-- [ ] /simplify 수준 자체 점검: 죽은 코드, 단순화 가능 지점
-- [ ] 전체 빌드 + 전체 스모크 + Docker 재빌드 → D1~D7 체크
-- [ ] GOAL_PROGRESS.md의 Definition of Deployable 전 항목 체크 → "배포 가능" 선언
-
-### Phase 4 — Sub-agent 병렬 테스트 (배포 가능 도달 후) — 실행 중
-- [~] 테스트 에이전트 A (사용자 여정) → docs/test-journey.md (병렬 실행 중)
-- [~] 테스트 에이전트 B (보안/남용) → docs/test-security.md (병렬 실행 중)
-- [~] 테스트 에이전트 C (코드 리뷰) → docs/test-codereview.md (병렬 실행 중)
-- [ ] 결과를 docs/TEST_REVIEW.md로 수합
-
-**선제 확인된 버그 (Phase 5에서 수정):**
-- TOCTOU @ apps/web/src/app/api/runner/messages/route.ts:49-89 — instruction status 체크와 update 사이 갭. WS push + inbox 드레인 동시 유입 시 같은 지시로 메시지 중복 생성 가능. 수정: updateMany({where:{id,status:"pending"}})로 원자적 claim 후 count===1일 때만 메시지 생성.
-
-### Phase 5 — 리뷰 & 개선 — ✅ 완료
-- [x] TEST_REVIEW.md 수합 → 우선순위화 (보안 57/57 PASS, 코드리뷰 high 5 + TOCTOU, 여정 P0)
-- [x] 핵심 개선 9건(F1~F9) 적용 + 재검증: build/tsc/tsup/Docker 클린, smoke 39+10 통과
-- [x] 최종 요약 + 메모리 갱신
-
-## 최종 결과 (2026-06-12)
-
-목표 v2 완수. OpenCanal은 **배포 가능 단계** 도달 + 병렬 테스트 검증 + 발견된 결함 수정 완료.
-
-- 보안: 블랙박스 57/57 통과, 0 finding
-- 코드리뷰 high 5건 전부 수정: codex RCE(stdin+shell:false), 지시 TOCTOU(원자적 claim), inReplyToId 멱등성/검증, 게이트웨이 시크릿(timingSafeEqual+prod throw)
-- 여정 P0(발견 API) + SHOULD 3건(receipt race/hash, attest zod) 수정
-- 회귀 스모크 49개(39+10) 통과, Docker 이미지 2종 빌드
-
-남은 백로그(비차단): H5 응답자 게이트(승인으로 실질 보호), admin 검증요청 목록 API(P1), 승인대기 목록 API(P2), 프롬프트 인젝션 강화, receipt 멀티참여 룸 대비.
+### R5 — 능력(skill) 생태계
+- [ ] agent capability 모델 (승인 봉투 안)
+- [ ] 어댑터 런타임 skill 매핑
+- [ ] 검증
 
 ## 진행 메모
-
-- (2026-06-12) 목표 v2 수립. 방향 재검토 결론: 구조 유지, "검증의 집행"과 "합의의 기록"을 보강.
-- (2026-06-12) Phase 1 완료: Notification 모델+벨+페이지, 알림 4지점(승인요청/지시실패/검증결과/거래확정), agent 생성 시 L1, trade 게이트(L1+ & can_negotiate), 권한 토글 UI, 지시 rate limit(룸당 5/시간당 30), 룸 닫기.
-- (2026-06-12) Phase 2 완료: ContractReceipt(transcript hash), "이 조건으로 확정" 버튼, /receipts/:id, 프로필 평판 v0(메시지 수/승인률/확정 거래).
-- (2026-06-12) Phase 3: agent-loop 공통 파이프라인(compose) 추출, 동적 import 제거. 검증 — smoke1 35개 + smoke2 10개 통과(production 빌드 기준), next build/tsc/tsup 클린, web Docker 빌드 성공. gateway Docker 빌드 진행 중.
-  - 상태 규칙(중요): trade 룸 거래 확정은 approval="approved"인 상대 agent 메시지에만 가능. Receipt 생성 시 transcript hash = 확정 시점까지 전달된(approval in none|approved) 메시지들의 SHA-256.
+- (2026-06-13) 목표 v3 수립. R0부터 순서 진행. 외부 시크릿 필요 항목(R0 ocm_ 토큰, R1 텔레그램 봇 토큰)은 코드를 완성해두고 env로 주입 가능하게 만든 뒤, 시크릿 없이 가능한 데까지 검증.

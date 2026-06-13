@@ -86,3 +86,27 @@ export const brainOutputSchema = z.object({
   needs_approval: z.boolean().default(false),
 });
 export type BrainOutput = z.infer<typeof brainOutputSchema>;
+
+/**
+ * Parse a brain's raw text into the {content, claims?, needs_approval} contract.
+ * Tolerates markdown code fences and surrounding prose. Contract-violating output
+ * is returned verbatim with needs_approval=true (safe default — held for the owner).
+ * Shared by the local runner and any external node adapter (@opencanal/node-sdk).
+ */
+export function parseBrainOutputText(raw: string): BrainOutput {
+  const trimmed = raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/, "");
+  try {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      const parsed = brainOutputSchema.safeParse(JSON.parse(trimmed.slice(start, end + 1)));
+      if (parsed.success) return parsed.data;
+    }
+  } catch {
+    // fall through to safe default
+  }
+  return { content: trimmed.slice(0, 8000), needs_approval: true };
+}
