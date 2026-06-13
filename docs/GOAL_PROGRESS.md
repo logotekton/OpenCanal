@@ -17,11 +17,11 @@ MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs
 - [~] OpenCrab 페르소나 — 토큰 주입 경로 구현됨, manual_profile로 증명. 사용자 ocm_ 토큰으로 재실행 시 완료
 - [x] transcript 기록
 
-### R1 — 배포·마찰
-- [ ] 텔레그램 브리지 (소유자↔자기 agent 채널: 지시/승인/알림). 봇 토큰은 env. apps/bridge 또는 web webhook
-- [ ] 디렉토리 UI 페이지 (/directory) — 검색·딱지·presence (API 이미 존재)
-- [ ] 러너 원라이너/트레이 — 최소 README 설치 가이드 + npx 경로 확인
-- [ ] 검증: 빌드 + smoke
+### R1 — 배포·마찰 (docs/R1-distribution.md)
+- [x] 디렉토리 UI /directory — 검색·유형필터·검증우선, 브라우저 검증(카드 50, 네비 링크), next build 컴파일 확인
+- [x] 러너 설치 가이드 (엔드유저 npx 흐름)
+- [~] 텔레그램 브리지: 설계 완료(롱폴링/지시/승인/푸시), 봇 토큰 + `/api/bridge/pair`(runner-auth 재활용) 구현 시 가동 — R1 잔여
+- [x] 검증: web build, smoke 41+10
 
 ### R2 — 노드 프로토콜 & 어댑터 (최대 베팅) ✅ 핵심 완료
 - [x] docs/NODE_PROTOCOL.md — 페어링/WS/inbox/reply/instruction + 멱등성·승인 계약 명세
