@@ -276,6 +276,46 @@ ok("중복 확정 409", doubleConfirm.status === 409);
 const receiptPage = await admin.fetch(`/receipts/${receipt.receiptId}`);
 ok("Receipt 페이지 접근(당사자)", receiptPage.status === 200);
 
+// ── 9b. 영수증 생애주기(이행/분쟁) + 평판 v1 (R3) ──
+console.log("9b. 영수증 이행/분쟁 + 평판 v1");
+const rid = receipt.receiptId;
+
+// 러너 receipts 엔드포인트 — founder 러너가 자기 거래 영수증을 가져간다 (OpenCrab ingest 데이터)
+const runnerReceipts = await (
+  await fetch(`${BASE}/api/runner/receipts`, { headers: founderRunner.headers })
+).json();
+ok("러너 receipts 엔드포인트가 영수증 제공", runnerReceipts.receipts.some((r) => r.id === rid));
+
+// 평판 v1 API — 실행 데이터 기반 합성 신뢰점수
+const rep0 = await admin.json(`/api/agents/${founderAgent.id}/reputation`);
+ok("평판 v1 신뢰점수 계산됨", typeof rep0.reputation.trustScore === "number");
+ok("평판 v1 거래수 반영", rep0.reputation.transactionCount >= 1);
+
+const badAct = await admin.fetch(`/api/receipts/${rid}`, post({ action: "nope" }));
+ok("영수증 잘못된 action 400", badAct.status === 400);
+
+// 비당사자는 영수증 액션 불가
+const stranger = new Session();
+await stranger.login(`stranger-${suffix}@test.com`, "Stranger");
+const strangerAct = await stranger.fetch(`/api/receipts/${rid}`, post({ action: "fulfill" }));
+ok("비당사자 영수증 액션 403", strangerAct.status === 403);
+
+// 이행 완료 (당사자) → 평판 이행률 반영
+const fulfilled = await admin.json(`/api/receipts/${rid}`, post({ action: "fulfill", note: "배송 완료" }));
+ok("영수증 이행 완료", fulfilled.status === "fulfilled");
+const dblFulfill = await admin.fetch(`/api/receipts/${rid}`, post({ action: "fulfill" }));
+ok("중복 이행 409", dblFulfill.status === 409);
+const repF = await admin.json(`/api/agents/${founderAgent.id}/reputation`);
+ok("평판 v1 이행률 100% 반영", repF.reputation.fulfillmentRate === 100);
+
+// 분쟁 제기 (다른 당사자) — 이행 후에도 분쟁 가능, disputed는 종착 상태
+const disputed = await alice.json(`/api/receipts/${rid}`, post({ action: "dispute", note: "조건 불일치" }));
+ok("영수증 분쟁 제기", disputed.status === "disputed");
+const afterDispute = await alice.fetch(`/api/receipts/${rid}`, post({ action: "fulfill" }));
+ok("분쟁 후 전이 차단 409", afterDispute.status === 409);
+const repD = await admin.json(`/api/agents/${founderAgent.id}/reputation`);
+ok("평판 v1 분쟁률 100% 반영", repD.reputation.disputeRate === 100);
+
 // ── 10. 지시 실패 보고 ──
 console.log("10. 지시 실패 보고");
 const failIns = await alice.json(
@@ -320,6 +360,10 @@ ok("닫힌 룸 지시 409", closedIns.status === 409);
 console.log("12b. 발견 API + 멱등성 회귀");
 const directory = await alice.json("/api/agents/directory");
 ok("발견 API가 타 agent 노출", directory.agents.some((a) => a.id === founderAgent.id));
+ok(
+  "발견 API에 활동 신호(messagesSent) 포함",
+  typeof directory.agents.find((a) => a.id === founderAgent.id)?.messagesSent === "number"
+);
 const dirSearch = await alice.json(`/api/agents/directory?q=${encodeURIComponent("founder")}`);
 ok("발견 API 검색 동작", dirSearch.agents.some((a) => a.id === founderAgent.id));
 const dirBadType = await alice.fetch("/api/agents/directory?type=garbage");

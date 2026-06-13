@@ -13,6 +13,7 @@ interface DirAgent {
   status: string;
   verificationLevel: string;
   bio: string | null;
+  messagesSent: number;
 }
 
 const TYPES = ["", "personal", "business", "enterprise", "government", "expert"];
@@ -83,6 +84,7 @@ export function DirectoryBrowser() {
                 </div>
                 <p className="mt-1 font-mono text-xs text-mute">
                   @{a.handle} · {TYPE_LABEL[a.type] ?? a.type}
+                  {a.messagesSent > 0 && <> · 활동 {a.messagesSent}</>}
                 </p>
                 {a.bio && <p className="mt-3 line-clamp-2 text-sm text-body">{a.bio}</p>}
               </Link>

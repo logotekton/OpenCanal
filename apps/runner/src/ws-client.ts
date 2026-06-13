@@ -28,6 +28,10 @@ export function startWsClient(config: RunnerConfig, loop: AgentLoop): void {
         .drainInbox()
         .then((n) => n > 0 && console.log(`[ws] drained ${n} pending message(s)`))
         .catch((err) => console.error("[ws] inbox drain failed:", err.message));
+      // 거래 이력을 OpenCrab 학습 메모리에 ingest (ocm_ 없으면 no-op)
+      loop
+        .ingestReceipts()
+        .catch((err) => console.error("[ws] receipt ingest failed:", err.message));
     });
 
     ws.on("message", (raw) => {

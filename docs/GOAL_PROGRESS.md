@@ -1,9 +1,9 @@
 # 목표 v3: 로드맵 R0~R5 완수 (2026-06-13 시작)
 
 > ## ▶ 다음 작업 (콜드 재개 진입점)
-> **R3 — 학습 메모리 & 평판 v1**부터. 외부 시크릿 불필요, 전부 빌드·테스트 가능.
-> 완료: R0(라이브 증명) · R2(노드 SDK) · R1 디렉토리. 잔여 외부의존: R0 OpenCrab(ocm_ 토큰), R1 텔레그램 브리지(봇 토큰).
-> 재개 순서: ① 이 파일 + docs/ROADMAP.md 읽기 ② `docker compose up -d` (DB) ③ web/gateway 기동 ④ R3 착수 ⑤ 단계별 커밋(main + review-head re-parent on 8b8917e) + smoke(41+10)로 검증.
+> **R4 — 말→성사 (Commerce Room)**부터. 외부 시크릿 불필요, 전부 빌드·테스트 가능.
+> 완료: R0(라이브 증명) · R2(노드 SDK) · R1 디렉토리 · **R3(평판 v1 + 영수증 이행/분쟁 + OpenCrab ingest 경로)**. 잔여 외부의존: R0 OpenCrab(ocm_ 토큰), R1 텔레그램 브리지(봇 토큰), R3 ingest 실제 ontology_ingest(ocm_ 토큰).
+> 재개 순서: ① 이 파일 + docs/ROADMAP.md 읽기 ② `docker compose up -d` (DB) ③ web(next build→start)/gateway 기동 ④ R4 착수 ⑤ 단계별 커밋(main + review-head re-parent on 8b8917e) + smoke(53+10)로 검증.
 > git: 깨끗하고 origin/main 푸시됨. 커밋 메시지는 반드시 `git commit -F <file>` (bash에서 `@'...'@` 금지).
 
 
@@ -15,7 +15,7 @@
 AGI 시대 개인 agent가 개인을 대신한다 → 검증된 agent 플랫폼. 경쟁(Moltbot/OpenClaw/Hermes)과 런타임으로 경쟁하지 않고, 그들이 OpenCanal 검증 노드가 되게 한다(R2 어댑터). 상세: docs/ROADMAP.md, 메모리 strategy-positioning.
 
 ## 베이스라인 (완료)
-MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(41) + apps/gateway/scripts/smoke2.mjs(10). 검증 루틴: `next build` + tsc(gateway/runner) + tsup + 두 smoke. 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d.
+MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(53) + apps/gateway/scripts/smoke2.mjs(10). 검증 루틴: `next build` + tsc(gateway/runner/node-sdk/shared) + tsup + 두 smoke. 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d. 주의: tsx watch(gateway dev)가 @prisma/client DLL을 잡으면 `prisma generate`가 EPERM — 게이트웨이 종료 후 generate.
 
 ## 체크리스트
 
@@ -39,11 +39,13 @@ MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs
 - [x] DRY: 파싱 단일출처 parseBrainOutputText를 @opencanal/shared로, 러너 adapter가 위임
 - [ ] (선택, 후속) 러너 자체를 node-sdk 위로 재구현 — 현재는 별도 구현 공존
 
-### R3 — 학습 메모리 & 평판 v1
-- [ ] 룸 결과/ContractReceipt를 OpenCrab에 ingest (러너 측, ocm_ 있을 때)
-- [ ] 평판 v1: 응답률/승인률/이행률/분쟁률 계산 (현재 평판 v0 확장)
-- [ ] 프로필 신뢰 신호 강화
-- [ ] 검증: 스모크에 평판 케이스
+### R3 — 학습 메모리 & 평판 v1 ✅
+- [x] 룸 결과/ContractReceipt를 OpenCrab에 ingest — /api/runner/receipts(데이터) + OpencrabClient.ingestReceipt(ontology_ingest) + AgentLoop.ingestReceipts(상태 변화 시 재ingest, ocm_ 없으면 no-op), ws-client 연결 시 호출
+- [x] 평판 v1: 응답률/승인률/이행률/분쟁률/근거점수 + 합성 신뢰점수 — packages/shared/reputation.ts(순수) + web/lib/reputation.ts(집계) + /api/agents/[id]/reputation
+- [x] 영수증 생애주기 — ReceiptStatus(confirmed/fulfilled/disputed) + /api/receipts/[id] POST(fulfill|dispute, 당사자만, disputed 종착) — 이행률/분쟁률의 데이터 원천
+- [x] 프로필 신뢰 신호 강화 — 프로필 TRACK RECORD에 v1 지표+신뢰점수, 디렉토리에 활동(messagesSent) 힌트, receipt 페이지 상태 chip+이행/분쟁 버튼
+- [x] 검증: 스모크에 평판/이행/분쟁/러너receipts 케이스 (smoke 41→53)
+- [~] 잔여: 실제 ontology_ingest 호출은 ocm_ 토큰 필요(경로·no-op만 검증). 도구명 ontology_ingest 가정 — 실토큰으로 검증 시 확정
 
 ### R4 — 말→성사 (Commerce Room)
 - [ ] BotContract 이행 단계 (Offer/CounterOffer는 이미 trade 룸+Receipt로 일부; 조건표·이행상태 추가)

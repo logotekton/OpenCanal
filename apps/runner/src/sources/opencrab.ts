@@ -2,6 +2,7 @@
 // ocm_ 토큰은 이 모듈에서만 사용되고 OpenCanal 플랫폼으로는 절대 전송되지 않는다.
 
 import { createHash } from "crypto";
+import type { ReceiptIngest } from "@opencanal/shared";
 
 interface McpToolResult {
   content?: { type: string; text?: string }[];
@@ -75,6 +76,34 @@ export class OpencrabClient {
       return resultText.slice(0, 4000);
     } catch (err) {
       return `(OpenCrab query failed: ${err instanceof Error ? err.message : String(err)})`;
+    }
+  }
+
+  /**
+   * 거래 영수증을 사용자 온톨로지에 ingest한다 (학습 메모리, R3).
+   * 다음 세션의 personaContext 질의가 거래 이력을 반영하게 된다.
+   * 실패는 응답 루프를 막지 않도록 삼킨다(best-effort).
+   */
+  async ingestReceipt(receipt: ReceiptIngest): Promise<boolean> {
+    const text = [
+      `OpenCanal 거래 영수증 — 상태: ${receipt.status}`,
+      receipt.counterpartHandle ? `상대 agent: @${receipt.counterpartHandle}` : null,
+      `제안자: @${receipt.proposerHandle}`,
+      `합의 조건: ${receipt.terms}`,
+      receipt.fulfilledAt ? `이행 완료: ${receipt.fulfilledAt}` : null,
+      receipt.disputedAt ? `분쟁 제기: ${receipt.disputedAt}` : null,
+      `확정 시각: ${receipt.createdAt} · receipt ${receipt.id}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    try {
+      await this.callTool("ontology_ingest", {
+        text,
+        source: `opencanal:receipt:${receipt.id}`,
+      });
+      return true;
+    } catch {
+      return false;
     }
   }
 }

@@ -201,4 +201,27 @@ export class AgentLoop {
     }
     return inbox.messages.length + (inbox.instructions?.length ?? 0);
   }
+
+  // 같은 영수증이라도 상태가 바뀌면(confirmed→fulfilled→disputed) 다시 ingest하도록 상태까지 추적
+  private ingestedReceipts = new Map<string, string>();
+
+  /**
+   * 거래 영수증을 OpenCrab(학습 메모리)에 ingest한다 (R3).
+   * ocm_ 토큰이 없으면 no-op. 이미 같은 상태로 ingest한 건 건너뛴다.
+   */
+  async ingestReceipts(): Promise<number> {
+    if (!this.opencrab) return 0; // ocm_ 미연결 — no-op
+    const { receipts } = await this.api.receipts().catch(() => ({ receipts: [] }));
+    let count = 0;
+    for (const r of receipts) {
+      if (this.ingestedReceipts.get(r.id) === r.status) continue;
+      const ok = await this.opencrab.ingestReceipt(r);
+      if (ok) {
+        this.ingestedReceipts.set(r.id, r.status);
+        count++;
+      }
+    }
+    if (count > 0) console.log(`[loop] OpenCrab에 거래 이력 ${count}건 ingest`);
+    return count;
+  }
 }

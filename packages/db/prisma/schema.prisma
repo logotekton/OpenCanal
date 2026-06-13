@@ -93,6 +93,14 @@ enum InstructionStatus {
   failed
 }
 
+// 영수증 생애주기 — 합의 확정(confirmed) → 이행 완료(fulfilled) 또는 분쟁(disputed).
+// 평판 v1의 이행률/분쟁률은 이 상태 전이로 계산된다 (자기소개가 아닌 실행 결과).
+enum ReceiptStatus {
+  confirmed
+  fulfilled
+  disputed
+}
+
 // ───────────────────────── Auth (Auth.js) ─────────────────────────
 
 model User {
@@ -372,6 +380,14 @@ model ContractReceipt {
   acceptedById      String // 확정한 사용자 (제안 받은 쪽 소유자)
   transcriptHash    String // 확정 시점까지의 전달된 대화 SHA-256
   terms             String // 제안 메시지 본문 스냅샷 (제안이 수정되어도 영수증은 불변)
+
+  // 생애주기: confirmed(기본) → fulfilled(이행 완료) | disputed(분쟁 제기).
+  // 결제·자동거래는 없다 — fulfilled는 "조건이 지켜졌다"는 당사자 기록일 뿐(can_spend off 유지).
+  status      ReceiptStatus @default(confirmed)
+  fulfilledAt DateTime?
+  disputedAt  DateTime?
+  note        String? // 이행/분쟁 사유 스냅샷
+
   createdAt         DateTime @default(now())
 
   // 불변 증거: 기초가 되는 룸/제안 메시지를 지우면 영수증이 함께 사라지면 안 된다.

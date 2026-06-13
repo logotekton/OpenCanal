@@ -1,7 +1,12 @@
 // Platform REST client (device-token auth).
 
 import type { RunnerConfig } from "./config";
-import type { RoomMessageEvent, RoomInstructionEvent, AttestSourcePayload } from "@opencanal/shared";
+import type {
+  RoomMessageEvent,
+  RoomInstructionEvent,
+  AttestSourcePayload,
+  ReceiptIngest,
+} from "@opencanal/shared";
 
 export interface InboxResponse {
   agentId: string;
@@ -63,6 +68,10 @@ export class PlatformApi {
 
   history(roomId: string): Promise<{ messages: { senderHandle: string; senderAgentId: string; content: string }[] }> {
     return this.request("GET", `/api/runner/rooms/${roomId}/history`);
+  }
+
+  receipts(): Promise<{ receipts: ReceiptIngest[] }> {
+    return this.request("GET", "/api/runner/receipts");
   }
 
   attestSource(sourceId: string, payload: AttestSourcePayload): Promise<{ ok: boolean }> {

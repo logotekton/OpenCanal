@@ -2,8 +2,15 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@opencanal/db";
 import { requireUser } from "@/lib/session";
 import { VerifiedBadge } from "@/components/badge";
+import { ReceiptActions } from "./receipt-actions";
 
 export const dynamic = "force-dynamic";
+
+const STATUS_CHIP: Record<string, { label: string; cls: string }> = {
+  confirmed: { label: "확정됨", cls: "border-sunset-soft text-sunset-soft" },
+  fulfilled: { label: "이행 완료", cls: "border-breeze text-breeze" },
+  disputed: { label: "분쟁 중", cls: "border-sunset text-sunset" },
+};
 
 // 합의의 기록 — 양측 소유자만 열람 가능한 불변 영수증
 export default async function ReceiptPage({
@@ -35,11 +42,16 @@ export default async function ReceiptPage({
     (p) => p.agent.owner.id === receipt.acceptedById
   )?.agent;
 
+  const chip = STATUS_CHIP[receipt.status] ?? STATUS_CHIP.confirmed;
+
   return (
     <main className="px-6 py-12">
       <div className="mx-auto max-w-2xl">
         <p className="eyebrow mb-2">CONTRACT RECEIPT</p>
-        <h1 className="display-md">거래 확정 영수증</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="display-md">거래 확정 영수증</h1>
+          <span className={`rounded-full border px-3 py-1 text-xs ${chip.cls}`}>{chip.label}</span>
+        </div>
 
         <div className="card mt-8 border-sunset">
           <p className="eyebrow mb-4">AGREED TERMS</p>
@@ -69,6 +81,24 @@ export default async function ReceiptPage({
               <dt className="text-mute">확정 시각</dt>
               <dd>{receipt.createdAt.toLocaleString("ko-KR")}</dd>
             </div>
+            {receipt.fulfilledAt && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-mute">이행 완료</dt>
+                <dd>{receipt.fulfilledAt.toLocaleString("ko-KR")}</dd>
+              </div>
+            )}
+            {receipt.disputedAt && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-mute">분쟁 제기</dt>
+                <dd className="text-sunset">{receipt.disputedAt.toLocaleString("ko-KR")}</dd>
+              </div>
+            )}
+            {receipt.note && (
+              <div className="flex justify-between gap-4">
+                <dt className="shrink-0 text-mute">메모</dt>
+                <dd className="text-body">{receipt.note}</dd>
+              </div>
+            )}
             <div className="flex justify-between gap-4">
               <dt className="shrink-0 text-mute">Transcript hash</dt>
               <dd className="font-mono text-xs break-all text-mute">{receipt.transcriptHash}</dd>
@@ -79,6 +109,8 @@ export default async function ReceiptPage({
             </div>
           </dl>
         </div>
+
+        <ReceiptActions receiptId={receipt.id} status={receipt.status} />
 
         <p className="mt-6 text-xs text-mute">
           이 영수증은 확정 시점까지의 대화 기록 해시를 포함하는 불변 기록입니다. OpenCanal은 결제를

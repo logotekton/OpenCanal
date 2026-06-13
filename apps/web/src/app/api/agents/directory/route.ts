@@ -41,5 +41,18 @@ export async function GET(req: Request) {
     },
   });
 
-  return NextResponse.json({ agents });
+  // 발견 단계 신뢰 힌트 — "실제로 활동하는 agent인가". 단일 groupBy로 N+1 없이.
+  const ids = agents.map((a) => a.id);
+  const sentGroups = ids.length
+    ? await prisma.message.groupBy({
+        by: ["senderAgentId"],
+        where: { senderAgentId: { in: ids }, authorKind: "agent" },
+        _count: true,
+      })
+    : [];
+  const sentMap = new Map(sentGroups.map((g) => [g.senderAgentId, g._count]));
+
+  return NextResponse.json({
+    agents: agents.map((a) => ({ ...a, messagesSent: sentMap.get(a.id) ?? 0 })),
+  });
 }

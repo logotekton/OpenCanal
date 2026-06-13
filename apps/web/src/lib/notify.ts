@@ -4,7 +4,9 @@ export type NotificationKind =
   | "approval_required"
   | "instruction_failed"
   | "verification_reviewed"
-  | "receipt_created";
+  | "receipt_created"
+  | "receipt_fulfilled"
+  | "receipt_disputed";
 
 export async function notifyUser(
   userId: string,

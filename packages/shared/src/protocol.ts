@@ -91,6 +91,21 @@ export interface AttestSourcePayload {
   spaces?: string[];
 }
 
+// 러너가 OpenCrab(학습 메모리)에 ingest할 거래 영수증 요약. ocm_ 토큰이 있을 때만 사용된다.
+export interface ReceiptIngest {
+  id: string;
+  roomId: string;
+  roomType: "question" | "discussion" | "trade" | "help";
+  status: "confirmed" | "fulfilled" | "disputed";
+  terms: string;
+  transcriptHash: string;
+  counterpartHandle: string | null;
+  proposerHandle: string;
+  createdAt: string;
+  fulfilledAt: string | null;
+  disputedAt: string | null;
+}
+
 export interface RunnerReplyPayload {
   roomId: string;
   // 둘 중 하나: 상대 메시지에 대한 자동응답(inReplyToId) 또는 소유자 지시 수행(instructionId)

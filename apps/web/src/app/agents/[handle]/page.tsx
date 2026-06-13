@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { prisma } from "@opencanal/db";
 import { getSessionUser } from "@/lib/session";
+import { getAgentReputation } from "@/lib/reputation";
 import { VerifiedBadge, LevelChip } from "@/components/badge";
 import { PresenceDot } from "@/components/presence";
 import { AskAgentButton } from "./ask-button";
@@ -9,6 +10,19 @@ import { RequestVerificationForm } from "./request-verification";
 import { PermissionsPanel } from "./permissions-panel";
 
 export const dynamic = "force-dynamic";
+
+function pctText(v: number | null): string {
+  return v !== null ? `${v}%` : "—";
+}
+
+function Metric({ label, value, tone }: { label: string; value: string; tone?: "warn" }) {
+  return (
+    <div className="card py-4 text-center">
+      <p className={`display-md ${tone === "warn" ? "text-sunset" : ""}`}>{value}</p>
+      <p className="mt-1 text-xs text-mute">{label}</p>
+    </div>
+  );
+}
 
 export default async function AgentProfilePage({
   params,
@@ -41,14 +55,8 @@ export default async function AgentProfilePage({
   const manualSource = agent.sources.find((s) => s.kind === "manual_profile");
   const permissions = (agent.permissions ?? {}) as { can_negotiate?: boolean };
 
-  // 평판 v0 — 자기소개가 아니라 실행 결과로 계산한다 (v1 Reputation 원칙)
-  const [messagesSent, approvalsTotal, approvalsApproved, receiptsCount] = await Promise.all([
-    prisma.message.count({ where: { senderAgentId: agent.id, authorKind: "agent" } }),
-    prisma.approvalRequest.count({ where: { agentId: agent.id, state: { not: "pending" } } }),
-    prisma.approvalRequest.count({ where: { agentId: agent.id, state: "approved" } }),
-    prisma.contractReceipt.count({ where: { room: { participants: { some: { agentId: agent.id } } } } }),
-  ]);
-  const approvalRate = approvalsTotal > 0 ? Math.round((approvalsApproved / approvalsTotal) * 100) : null;
+  // 평판 v1 — 자기소개가 아니라 실행 결과로 계산한다 (응답률·승인률·이행률·분쟁률·근거점수 + 합성 신뢰점수)
+  const reputation = await getAgentReputation(agent.id);
 
   return (
     <main className="px-6 py-12">
@@ -78,19 +86,29 @@ export default async function AgentProfilePage({
 
         <section className="mt-10">
           <p className="eyebrow mb-3">TRACK RECORD</p>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="card py-4 text-center">
-              <p className="display-md">{messagesSent}</p>
-              <p className="mt-1 text-xs text-mute">보낸 메시지</p>
+          <div className="card flex items-baseline justify-between bg-canvas-soft">
+            <div>
+              <p className="display-md">
+                {reputation.trustScore !== null ? reputation.trustScore : "—"}
+                <span className="text-base text-mute"> / 100</span>
+              </p>
+              <p className="mt-1 text-xs text-mute">신뢰 점수 — 실행 결과 기반</p>
             </div>
-            <div className="card py-4 text-center">
-              <p className="display-md">{approvalRate !== null ? `${approvalRate}%` : "—"}</p>
-              <p className="mt-1 text-xs text-mute">소유자 승인률</p>
-            </div>
-            <div className="card py-4 text-center">
-              <p className="display-md">{receiptsCount}</p>
-              <p className="mt-1 text-xs text-mute">확정된 거래</p>
-            </div>
+            <p className="text-xs text-mute">
+              표본 {reputation.sampleSize} · 확정 거래 {reputation.transactionCount}건
+            </p>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <Metric label="응답률" value={pctText(reputation.responseRate)} />
+            <Metric label="소유자 승인률" value={pctText(reputation.approvalRate)} />
+            <Metric label="이행률" value={pctText(reputation.fulfillmentRate)} />
+            <Metric
+              label="분쟁률"
+              value={pctText(reputation.disputeRate)}
+              tone={reputation.disputeRate && reputation.disputeRate > 0 ? "warn" : undefined}
+            />
+            <Metric label="근거점수" value={pctText(reputation.evidenceScore)} />
+            <Metric label="보낸 메시지" value={String(reputation.messagesSent)} />
           </div>
         </section>
 
