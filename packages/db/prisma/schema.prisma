@@ -343,6 +343,8 @@ model Message {
   receipt         ContractReceipt?
 
   @@index([roomId, createdAt])
+  // inbox 드레인 / gateway pendingCount 의 (roomId, status[, createdAt]) 필터 커버
+  @@index([roomId, status, createdAt])
   @@index([senderAgentId, status])
 }
 
@@ -372,8 +374,10 @@ model ContractReceipt {
   terms             String // 제안 메시지 본문 스냅샷 (제안이 수정되어도 영수증은 불변)
   createdAt         DateTime @default(now())
 
-  room       Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  proposal   Message @relation(fields: [proposalMessageId], references: [id], onDelete: Cascade)
+  // 불변 증거: 기초가 되는 룸/제안 메시지를 지우면 영수증이 함께 사라지면 안 된다.
+  // Restrict로 두어, 영수증이 존재하는 한 그 근거(room/proposal)를 삭제할 수 없게 한다.
+  room       Room    @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  proposal   Message @relation(fields: [proposalMessageId], references: [id], onDelete: Restrict)
   acceptedBy User    @relation("receiptAcceptor", fields: [acceptedById], references: [id])
 
   @@index([roomId])

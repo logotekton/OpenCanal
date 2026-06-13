@@ -20,7 +20,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ agentI
   }
 
   const agent = await prisma.agent.findUnique({ where: { id: agentId } });
-  const current = permissionsSchema.parse(agent?.permissions ?? {});
+  // 레거시/손상된 permissions JSON이 들어와도 500 대신 기본값으로 복구 (safeParse)
+  const parsedPerms = permissionsSchema.safeParse(agent?.permissions ?? {});
+  const current = parsedPerms.success ? parsedPerms.data : permissionsSchema.parse({});
   const next = { ...current, can_negotiate: body.can_negotiate, can_commit: false, can_spend: false };
 
   await prisma.agent.update({ where: { id: agentId }, data: { permissions: next } });

@@ -16,14 +16,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ instruc
   if (!instruction || instruction.agentId !== device.agentId) {
     return NextResponse.json({ error: "instruction not found" }, { status: 404 });
   }
-  if (instruction.status !== "pending") {
-    return NextResponse.json({ error: "already processed" }, { status: 409 });
-  }
 
-  await prisma.instruction.update({
-    where: { id: instructionId },
+  // 원자적 claim — pending인 동안 단 한 번만 실패 처리되도록 (runner/messages와 동일 패턴).
+  // 동시 fail 호출 / fail+처리 경합에서 중복 알림·상태 덮어쓰기 방지.
+  const claim = await prisma.instruction.updateMany({
+    where: { id: instructionId, status: "pending" },
     data: { status: "failed", error: (body.error ?? "unknown error").slice(0, 500), processedAt: new Date() },
   });
+  if (claim.count === 0) {
+    return NextResponse.json({ error: "already processed" }, { status: 409 });
+  }
 
   await notifyUser(
     device.agent.ownerId,

@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@opencanal/db";
 import { apiUser, userOwnsAgent } from "@/lib/session";
+import { z } from "zod";
+
+// 검증 신청 페이로드 — 무제한 저장 방지 (빈 본문/초장문 거부)
+const verificationSchema = z.object({
+  note: z.string().min(1, "설명을 입력해주세요.").max(2000),
+  officialUrl: z.string().url().max(500).optional().or(z.literal("")),
+});
 
 export async function POST(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
   const user = await apiUser();
@@ -11,7 +18,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const body = (await req.json().catch(() => ({}))) as { note?: string; officialUrl?: string };
+  const parsed = verificationSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? "invalid input" },
+      { status: 400 }
+    );
+  }
+  const body = parsed.data;
 
   const existing = await prisma.verificationRequest.findFirst({
     where: { agentId, state: "pending" },
