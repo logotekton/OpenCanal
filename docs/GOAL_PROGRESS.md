@@ -1,5 +1,12 @@
 # 목표 v3: 로드맵 R0~R5 완수 (2026-06-13 시작)
 
+> ## ▶ 다음 작업 (콜드 재개 진입점)
+> **R3 — 학습 메모리 & 평판 v1**부터. 외부 시크릿 불필요, 전부 빌드·테스트 가능.
+> 완료: R0(라이브 증명) · R2(노드 SDK) · R1 디렉토리. 잔여 외부의존: R0 OpenCrab(ocm_ 토큰), R1 텔레그램 브리지(봇 토큰).
+> 재개 순서: ① 이 파일 + docs/ROADMAP.md 읽기 ② `docker compose up -d` (DB) ③ web/gateway 기동 ④ R3 착수 ⑤ 단계별 커밋(main + review-head re-parent on 8b8917e) + smoke(41+10)로 검증.
+> git: 깨끗하고 origin/main 푸시됨. 커밋 메시지는 반드시 `git commit -F <file>` (bash에서 `@'...'@` 금지).
+
+
 > **세션이 끊겨도 이 파일 + docs/ROADMAP.md를 읽고 이어서 작업한다.** (cron `opencanal-goal-resume` 5시간 주기)
 > 작업 디렉토리: C:\Logotekton\OpenCanal. 서버: web :3000, gateway :8787, postgres :5433(docker).
 > git: main 단일 흐름 + review-head(PR #1, 빈 base 8b8917e에 re-parent). 커밋 메시지는 `git commit -F <file>`로(헤어 here-string 금지).
