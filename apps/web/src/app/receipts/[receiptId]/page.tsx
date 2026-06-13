@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@opencanal/db";
 import { requireUser } from "@/lib/session";
 import { VerifiedBadge } from "@/components/badge";
+import type { ReceiptCondition } from "@opencanal/shared";
 import { ReceiptActions } from "./receipt-actions";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +44,9 @@ export default async function ReceiptPage({
   )?.agent;
 
   const chip = STATUS_CHIP[receipt.status] ?? STATUS_CHIP.confirmed;
+  const conditions = Array.isArray(receipt.conditions)
+    ? (receipt.conditions as ReceiptCondition[])
+    : [];
 
   return (
     <main className="px-6 py-12">
@@ -57,6 +61,25 @@ export default async function ReceiptPage({
           <p className="eyebrow mb-4">AGREED TERMS</p>
           <p className="text-body whitespace-pre-wrap">{receipt.terms}</p>
         </div>
+
+        {conditions.length > 0 && (
+          <div className="card mt-4">
+            <p className="eyebrow mb-4">조건표</p>
+            <dl className="flex flex-col gap-2 text-sm">
+              {conditions.map((c, i) => (
+                <div key={i} className="flex items-center justify-between gap-4">
+                  <dt className="text-mute">
+                    {receipt.status === "fulfilled" && (
+                      <span className={c.met ? "text-breeze" : "text-mute"}>{c.met ? "✓ " : "· "}</span>
+                    )}
+                    {c.label}
+                  </dt>
+                  <dd className="text-body">{c.value || "—"}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        )}
 
         <div className="card mt-4 bg-canvas-soft">
           <dl className="flex flex-col gap-3 text-sm">

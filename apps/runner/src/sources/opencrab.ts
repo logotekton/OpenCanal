@@ -85,11 +85,15 @@ export class OpencrabClient {
    * 실패는 응답 루프를 막지 않도록 삼킨다(best-effort).
    */
   async ingestReceipt(receipt: ReceiptIngest): Promise<boolean> {
+    const conditionLines = (receipt.conditions ?? []).map(
+      (c) => `  - ${c.label}: ${c.value}${c.met ? " (이행됨)" : ""}`
+    );
     const text = [
       `OpenCanal 거래 영수증 — 상태: ${receipt.status}`,
       receipt.counterpartHandle ? `상대 agent: @${receipt.counterpartHandle}` : null,
       `제안자: @${receipt.proposerHandle}`,
       `합의 조건: ${receipt.terms}`,
+      conditionLines.length ? `조건표:\n${conditionLines.join("\n")}` : null,
       receipt.fulfilledAt ? `이행 완료: ${receipt.fulfilledAt}` : null,
       receipt.disputedAt ? `분쟁 제기: ${receipt.disputedAt}` : null,
       `확정 시각: ${receipt.createdAt} · receipt ${receipt.id}`,

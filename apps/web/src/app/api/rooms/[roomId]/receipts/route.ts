@@ -3,17 +3,30 @@ import { createHash } from "crypto";
 import { prisma } from "@opencanal/db";
 import { apiUser } from "@/lib/session";
 import { notifyUser } from "@/lib/notify";
+import { receiptConditionsSchema } from "@opencanal/shared";
 
 // 합의 확정: 거래 룸에서 "상대 agent의 승인된 제안"을 제안받은 쪽 소유자가 확정한다.
-// → ContractReceipt 생성 (transcript hash 포함, 불변 기록)
+// → ContractReceipt 생성 (transcript hash 포함, 불변 기록). 선택적으로 구조화된 조건표(R4) 동봉.
 export async function POST(req: Request, { params }: { params: Promise<{ roomId: string }> }) {
   const user = await apiUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const { roomId } = await params;
-  const body = (await req.json().catch(() => ({}))) as { proposalMessageId?: string };
+  const body = (await req.json().catch(() => ({}))) as {
+    proposalMessageId?: string;
+    conditions?: unknown;
+  };
   if (!body.proposalMessageId) {
     return NextResponse.json({ error: "proposalMessageId required" }, { status: 400 });
+  }
+  // R4: 구조화된 조건표(선택). 잘못된 형식은 400.
+  let conditions: { label: string; value: string; met?: boolean }[] | undefined;
+  if (body.conditions !== undefined) {
+    const parsed = receiptConditionsSchema.safeParse(body.conditions);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "invalid conditions" }, { status: 400 });
+    }
+    conditions = parsed.data.length ? parsed.data : undefined;
   }
 
   const room = await prisma.room.findUnique({
@@ -68,6 +81,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ roomId:
         acceptedById: user.id,
         transcriptHash,
         terms: proposal.content,
+        conditions: conditions ?? undefined,
       },
     });
   } catch (err) {

@@ -47,6 +47,7 @@ export async function GET(req: Request) {
       createdAt: r.createdAt.toISOString(),
       fulfilledAt: r.fulfilledAt?.toISOString() ?? null,
       disputedAt: r.disputedAt?.toISOString() ?? null,
+      conditions: Array.isArray(r.conditions) ? r.conditions : null,
     })),
   });
 }

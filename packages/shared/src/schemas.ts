@@ -79,6 +79,26 @@ export const postMessageSchema = z.object({
   claims: z.array(claimSchema).optional(),
 });
 
+// ── BotContract 조건표 (R4 Commerce Room) ──
+// 합의를 자유 텍스트(terms)뿐 아니라 구조화된 조건으로 기록한다. met은 이행 단계에서 채워진다.
+export const receiptConditionSchema = z.object({
+  label: z.string().min(1).max(120),
+  value: z.string().max(500).default(""),
+  met: z.boolean().optional(),
+});
+export type ReceiptCondition = z.infer<typeof receiptConditionSchema>;
+export const receiptConditionsSchema = z.array(receiptConditionSchema).max(20);
+
+// 숙박/예약 vertical 최소형 — v1 Phase 4 BotContract agreed_terms 라벨 셋
+export const LODGING_TEMPLATE: readonly string[] = [
+  "체크인 날짜",
+  "체크아웃 날짜",
+  "인원",
+  "총 가격",
+  "취소 정책",
+  "주차",
+];
+
 // ── Brain output contract ──
 export const brainOutputSchema = z.object({
   content: z.string(),

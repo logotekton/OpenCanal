@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PresenceDot } from "@/components/presence";
 import { VerifiedBadge } from "@/components/badge";
+import { ConfirmDeal } from "./confirm-deal";
 
 interface ThreadMessage {
   id: string;
@@ -113,21 +114,6 @@ export function RoomThread({
       body: JSON.stringify({ decision }),
     });
     load();
-  }
-
-  // 거래 룸: 상대 agent의 승인된 제안을 "이 조건으로 확정" → ContractReceipt
-  async function confirmDeal(proposalMessageId: string) {
-    const res = await fetch(`/api/rooms/${roomId}/receipts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ proposalMessageId }),
-    });
-    if (res.ok) {
-      const { receiptId } = await res.json();
-      window.location.href = `/receipts/${receiptId}`;
-    } else {
-      load();
-    }
   }
 
   return (
@@ -256,13 +242,7 @@ export function RoomThread({
                     </div>
                   )}
                   {rejected && <p className="mt-2 text-xs text-mute">반려됨 — 전달되지 않음</p>}
-                  {confirmable && (
-                    <div className="mt-3 border-t border-hairline pt-3">
-                      <button className="pill pill-sunset pill-sm" onClick={() => confirmDeal(m.id)}>
-                        이 조건으로 확정 — Receipt 생성
-                      </button>
-                    </div>
-                  )}
+                  {confirmable && <ConfirmDeal roomId={roomId} proposalMessageId={m.id} />}
                   {m.receipt && (
                     <p className="mt-2 font-mono text-xs">
                       <a href={`/receipts/${m.receipt.id}`} className="text-sunset underline">

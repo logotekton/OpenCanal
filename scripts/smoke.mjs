@@ -316,6 +316,70 @@ ok("분쟁 후 전이 차단 409", afterDispute.status === 409);
 const repD = await admin.json(`/api/agents/${founderAgent.id}/reputation`);
 ok("평판 v1 분쟁률 100% 반영", repD.reputation.disputeRate === 100);
 
+// ── 9c. 숙박 vertical: 조건표 + 이행 (R4) ──
+console.log("9c. 숙박 조건표 + 이행 (R4)");
+const lodgingRoom = await alice.json(
+  "/api/rooms",
+  post({ targetAgentId: founderAgent.id, initiatorAgentId: aliceAgent.id, type: "trade" })
+);
+const lodgingIns = await alice.json(
+  `/api/rooms/${lodgingRoom.roomId}/instructions`,
+  post({ content: "1박 숙박을 5만원에 예약하고 싶다고 제안해" })
+);
+const li = (await aliceRunner.inbox()).instructions.find(
+  (i) => i.instructionId === lodgingIns.instructionId
+);
+const lodgeHeld = await aliceRunner.reply({
+  roomId: lodgingRoom.roomId,
+  instructionId: li.instructionId,
+  content: "1박 숙박을 5만원에 예약하고 싶습니다. 체크인은 다음 주 금요일입니다.",
+  needsApproval: false,
+});
+ok("숙박 거래 제안 승인 대기", lodgeHeld.requiresApproval === true);
+const lodgeView = await alice.json(`/api/rooms/${lodgingRoom.roomId}/messages`);
+const lodgeMsg = lodgeView.messages.find((m) => m.content.includes("숙박"));
+await alice.json(`/api/approvals/${lodgeMsg.approvalRequest.id}`, post({ decision: "approved" }));
+const lodgeFounderView = await admin.json(`/api/rooms/${lodgingRoom.roomId}/messages`);
+const lodgeProposal = lodgeFounderView.messages.find((m) => m.content.includes("숙박"));
+
+// 잘못된 조건표는 400
+const badCond = await admin.fetch(
+  `/api/rooms/${lodgingRoom.roomId}/receipts`,
+  post({ proposalMessageId: lodgeProposal.id, conditions: [{ value: "라벨 없음" }] })
+);
+ok("잘못된 조건표 400", badCond.status === 400);
+
+// 숙박 조건표와 함께 확정
+const lodgeReceipt = await admin.json(
+  `/api/rooms/${lodgingRoom.roomId}/receipts`,
+  post({
+    proposalMessageId: lodgeProposal.id,
+    conditions: [
+      { label: "체크인 날짜", value: "다음 주 금요일" },
+      { label: "인원", value: "2명" },
+      { label: "총 가격", value: "50,000원" },
+      { label: "취소 정책", value: "3일 전 무료" },
+    ],
+  })
+);
+ok("조건표와 함께 합의 확정", !!lodgeReceipt.receiptId);
+
+const lodgeRunnerView = (
+  await (await fetch(`${BASE}/api/runner/receipts`, { headers: founderRunner.headers })).json()
+).receipts.find((r) => r.id === lodgeReceipt.receiptId);
+ok("러너 receipts에 조건표 4건 포함", lodgeRunnerView?.conditions?.length === 4);
+
+// 이행 완료 → 조건 met 기록
+const lodgeFulfilled = await admin.json(
+  `/api/receipts/${lodgeReceipt.receiptId}`,
+  post({ action: "fulfill" })
+);
+ok("숙박 이행 완료", lodgeFulfilled.status === "fulfilled");
+const lodgeAfter = (
+  await (await fetch(`${BASE}/api/runner/receipts`, { headers: founderRunner.headers })).json()
+).receipts.find((r) => r.id === lodgeReceipt.receiptId);
+ok("이행 후 조건 met=true 기록", lodgeAfter?.conditions?.every((c) => c.met === true));
+
 // ── 10. 지시 실패 보고 ──
 console.log("10. 지시 실패 보고");
 const failIns = await alice.json(

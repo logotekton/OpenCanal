@@ -388,6 +388,10 @@ model ContractReceipt {
   disputedAt  DateTime?
   note        String? // 이행/분쟁 사유 스냅샷
 
+  // BotContract 조건표 (R4): [{label, value, met?}]. 숙박 등 vertical은 라벨 템플릿으로 구조화한다.
+  // terms(자유 텍스트 스냅샷)와 별개 — 이행 시 met 플래그로 조건 충족을 기록한다.
+  conditions Json?
+
   createdAt         DateTime @default(now())
 
   // 불변 증거: 기초가 되는 룸/제안 메시지를 지우면 영수증이 함께 사라지면 안 된다.

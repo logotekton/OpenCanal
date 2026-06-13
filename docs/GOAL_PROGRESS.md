@@ -1,9 +1,9 @@
 # 목표 v3: 로드맵 R0~R5 완수 (2026-06-13 시작)
 
 > ## ▶ 다음 작업 (콜드 재개 진입점)
-> **R4 — 말→성사 (Commerce Room)**부터. 외부 시크릿 불필요, 전부 빌드·테스트 가능.
-> 완료: R0(라이브 증명) · R2(노드 SDK) · R1 디렉토리 · **R3(평판 v1 + 영수증 이행/분쟁 + OpenCrab ingest 경로)**. 잔여 외부의존: R0 OpenCrab(ocm_ 토큰), R1 텔레그램 브리지(봇 토큰), R3 ingest 실제 ontology_ingest(ocm_ 토큰).
-> 재개 순서: ① 이 파일 + docs/ROADMAP.md 읽기 ② `docker compose up -d` (DB) ③ web(next build→start)/gateway 기동 ④ R4 착수 ⑤ 단계별 커밋(main + review-head re-parent on 8b8917e) + smoke(53+10)로 검증.
+> **R5 — 능력(skill) 생태계**부터. 외부 시크릿 불필요, 전부 빌드·테스트 가능.
+> 완료: R0(라이브 증명) · R2(노드 SDK) · R1 디렉토리 · R3(평판 v1 + 영수증 이행/분쟁 + OpenCrab ingest 경로) · **R4(Commerce Room — 조건표 + 이행 워크플로 + 숙박 vertical)**. 잔여 외부의존: R0 OpenCrab(ocm_ 토큰), R1 텔레그램 브리지(봇 토큰), R3 ingest 실제 ontology_ingest(ocm_ 토큰).
+> 재개 순서: ① 이 파일 + docs/ROADMAP.md 읽기 ② `docker compose up -d` (DB) ③ web(next build→start)/gateway 기동 ④ R5 착수 ⑤ 단계별 커밋(main + review-head re-parent on 8b8917e) + smoke(59+10)로 검증.
 > git: 깨끗하고 origin/main 푸시됨. 커밋 메시지는 반드시 `git commit -F <file>` (bash에서 `@'...'@` 금지).
 
 
@@ -47,11 +47,11 @@ MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs
 - [x] 검증: 스모크에 평판/이행/분쟁/러너receipts 케이스 (smoke 41→53)
 - [~] 잔여: 실제 ontology_ingest 호출은 ocm_ 토큰 필요(경로·no-op만 검증). 도구명 ontology_ingest 가정 — 실토큰으로 검증 시 확정
 
-### R4 — 말→성사 (Commerce Room)
-- [ ] BotContract 이행 단계 (Offer/CounterOffer는 이미 trade 룸+Receipt로 일부; 조건표·이행상태 추가)
-- [ ] 숙박/예약 vertical 최소형 (v1 계획서 Phase 4)
-- [ ] can_spend off 유지, 승인 게이트 안에서 이행 기록
-- [ ] 검증: 스모크
+### R4 — 말→성사 (Commerce Room) ✅
+- [x] BotContract 이행 단계 — ContractReceipt.conditions(조건표 [{label,value,met}]) + /api/receipts/[id] fulfill이 met 기록, confirm 시 조건표 동봉(rooms/[id]/receipts)
+- [x] 숙박/예약 vertical 최소형 — shared LODGING_TEMPLATE(체크인/체크아웃/인원/총가격/취소정책/주차), 룸 확정 UI에 "숙박 조건 템플릿" 버튼(ConfirmDeal)
+- [x] can_spend off 유지 — 결제 경로 없음, fulfilled는 당사자의 사실 진술. receipt 페이지에 조건표+met 표시, 러너 receipts/ingest에 조건표 포함
+- [x] 검증: 스모크 9c(조건표 확정→이행→met 기록, 잘못된 조건표 400) (smoke 53→59)
 
 ### R5 — 능력(skill) 생태계
 - [ ] agent capability 모델 (승인 봉투 안)

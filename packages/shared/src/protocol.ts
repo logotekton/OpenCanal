@@ -1,6 +1,6 @@
 // WebSocket protocol between gateway <-> runner and gateway <-> browser.
 
-import type { Claim } from "./schemas";
+import type { Claim, ReceiptCondition } from "./schemas";
 
 // ── Server → Runner ──
 
@@ -104,6 +104,7 @@ export interface ReceiptIngest {
   createdAt: string;
   fulfilledAt: string | null;
   disputedAt: string | null;
+  conditions: ReceiptCondition[] | null;
 }
 
 export interface RunnerReplyPayload {
