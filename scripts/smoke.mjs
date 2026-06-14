@@ -696,6 +696,33 @@ const badLink = await alice.fetch(
 );
 ok("잘못된 intentId 404", badLink.status === 404);
 
+// ── 12d. N자 팬아웃 (ROOM_REDESIGN Bend 3) ──
+console.log("12d. N자 팬아웃 (Bend 3)");
+const carol = new Session();
+await carol.login(`carol-${suffix}@test.com`, "Carol");
+const carolAgent = await carol.json(
+  "/api/agents",
+  post({ handle: `carol-${suffix}`, displayName: "Carol Agent", type: "personal", sourceKind: "manual_profile", tastes: "x" })
+);
+const carolRunner = await pairRunner(carol, carolAgent.id);
+const fanIntent = await alice.json(
+  "/api/intents",
+  post({ onBehalfOfId: aliceAgent.id, kind: "question", spec: { goal: "견적 RFQ" } })
+);
+const fanout = await alice.json(
+  `/api/intents/${fanIntent.intent.id}/fanout`,
+  post({ initiatorAgentId: aliceAgent.id, targetAgentIds: [founderAgent.id, carolAgent.id], type: "question" })
+);
+ok("팬아웃 N자 룸 생성(3 참여)", fanout.participantCount === 3);
+ok("팬아웃 룸이 intent 링크", !!fanout.roomId && fanout.intentId === fanIntent.intent.id);
+const fanIns = await alice.json(`/api/rooms/${fanout.roomId}/instructions`, post({ content: "두 분께 견적 문의" }));
+const fanPending = (await aliceRunner.inbox()).instructions.find((i) => i.instructionId === fanIns.instructionId);
+await aliceRunner.reply({ roomId: fanout.roomId, instructionId: fanPending.instructionId, content: "견적 부탁드립니다", needsApproval: false });
+const fInbox = await founderRunner.inbox();
+const cInbox = await carolRunner.inbox();
+ok("N자 브로드캐스트: founder 수신", fInbox.messages.some((m) => m.roomId === fanout.roomId && m.content.includes("견적")));
+ok("N자 브로드캐스트: carol 수신", cInbox.messages.some((m) => m.roomId === fanout.roomId && m.content.includes("견적")));
+
 // ── 13. 알림 ──
 console.log("13. 알림");
 const aliceNotifs = await alice.json("/api/notifications");

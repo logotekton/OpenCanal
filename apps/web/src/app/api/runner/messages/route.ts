@@ -130,14 +130,11 @@ export async function POST(req: Request) {
   }
 
   if (!requiresApproval) {
-    const counterpart = room.participants.find((p) => p.agentId !== device.agentId);
-    if (counterpart) {
-      await notifyGateway({
-        kind: "room.message",
-        targetAgentId: counterpart.agentId,
-        messageId,
-      });
-    }
+    // Bend 3: N자 — 전달 메시지는 나를 제외한 모든 참여자에게 푸시(브로드캐스트)
+    const others = room.participants.filter((p) => p.agentId !== device.agentId);
+    await Promise.all(
+      others.map((p) => notifyGateway({ kind: "room.message", targetAgentId: p.agentId, messageId: messageId! }))
+    );
   } else {
     // 승인 대기 — 소유자에게 알림 (대리 구조의 신경)
     await notifyUser(

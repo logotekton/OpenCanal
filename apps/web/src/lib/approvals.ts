@@ -40,16 +40,15 @@ export async function decideApproval(
   ]);
 
   if (approved) {
-    const counterpart = approval.message.room.participants.find(
+    // Bend 3: N자 — 승인된 메시지는 작성자를 제외한 모든 참여자에게 푸시
+    const others = approval.message.room.participants.filter(
       (p) => p.agentId !== approval.message.senderAgentId
     );
-    if (counterpart) {
-      await notifyGateway({
-        kind: "room.message",
-        targetAgentId: counterpart.agentId,
-        messageId: approval.messageId,
-      });
-    }
+    await Promise.all(
+      others.map((p) =>
+        notifyGateway({ kind: "room.message", targetAgentId: p.agentId, messageId: approval.messageId })
+      )
+    );
   }
 
   return { status: 200, body: { ok: true } };
