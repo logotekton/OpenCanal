@@ -116,6 +116,7 @@ async function cmdStart(): Promise<void> {
     platformUrl: config.platformUrl,
     gatewayWsUrl: config.gatewayUrl,
     deviceToken: config.deviceToken,
+    handle: config.handle,
     displayName: config.handle,
     brain: ({ systemPrompt, userPrompt }) => brain.complete(systemPrompt, userPrompt),
     persona: opencrab ? (q) => opencrab.personaContext(q) : undefined,

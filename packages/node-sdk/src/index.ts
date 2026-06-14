@@ -47,6 +47,8 @@ export interface OpenCanalNodeOptions {
    * All capabilities live inside the approval envelope (requiresApproval defaults true).
    */
   capabilities?: CapabilityDecl[];
+  /** Seed the agent handle for the constitution before `hello` arrives (avoids a startup race). */
+  handle?: string;
   /** Display name for the constitution. Defaults to the agent handle. */
   displayName?: string;
   /** Per-room FIFO + worker-pool concurrency + hourly reply cap (protects host LLM quota). */
@@ -100,7 +102,8 @@ export class OpenCanalNode {
 
   constructor(options: OpenCanalNodeOptions) {
     this.o = options;
-    this.displayName = options.displayName ?? "agent";
+    this.handle = options.handle ?? "agent"; // hello가 도착하면 갱신되지만, 그 전 작성에도 올바른 핸들 사용
+    this.displayName = options.displayName ?? options.handle ?? "agent";
     this.queue = new RoomQueue(
       options.limits?.concurrency ?? 3,
       options.limits?.repliesPerHour ?? 60,
