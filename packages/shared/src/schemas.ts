@@ -138,10 +138,31 @@ export const provisionBodySchema = z.object({
   runnerVersion: z.string().optional(),
 });
 
+// ── 타입드 Interaction (docs/ROOM_REDESIGN.md Bend 1) ──
+// agent 발화의 "행위 종류". prose 채팅이 아니라 구조화된 상호작용으로 다루기 위한 1차 분류.
+export const interactionTypeSchema = z.enum([
+  "statement", // 일반 발화(기본)
+  "claim",
+  "evidence",
+  "interpretation",
+  "counterclaim",
+  "proposal",
+  "offer",
+  "counteroffer",
+  "mandate",
+  "decision",
+  "system",
+]);
+export type InteractionType = z.infer<typeof interactionTypeSchema>;
+
 // ── Brain output contract ──
 export const brainOutputSchema = z.object({
+  // Bend 1: 발화의 행위 종류. 두뇌가 안 주면 statement로 안전 기본.
+  type: interactionTypeSchema.default("statement"),
   content: z.string(),
   claims: z.array(claimSchema).optional(),
+  // 구조화 페이로드(offer terms, 책임/근거 등) — 사람용 content와 별개의 기계용 표현(JSON 패스스루).
+  payload: z.record(z.any()).optional(),
   needs_approval: z.boolean().default(false),
 });
 export type BrainOutput = z.infer<typeof brainOutputSchema>;
@@ -167,5 +188,5 @@ export function parseBrainOutputText(raw: string): BrainOutput {
   } catch {
     // fall through to safe default
   }
-  return { content: trimmed.slice(0, 8000), needs_approval: true };
+  return { type: "statement", content: trimmed.slice(0, 8000), needs_approval: true };
 }

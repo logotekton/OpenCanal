@@ -211,6 +211,10 @@ await founderRunner.reply({
 });
 const aliceView2 = await alice.json(`/api/rooms/${room.roomId}/messages`);
 ok("alice가 응답 조회 가능", aliceView2.messages.some((m) => m.content.includes("등산")));
+ok(
+  "기본 interactionType=statement (Bend 1)",
+  aliceView2.messages.find((m) => m.content.includes("등산"))?.interactionType === "statement"
+);
 
 // ── 9. Trade room: 권한 게이트 → 승인 게이트 → Receipt ──
 console.log("9. 거래 룸: 권한/승인 게이트 + 합의 확정");
@@ -251,6 +255,7 @@ const held = await aliceRunner.reply({
   roomId: tradeRoom.roomId,
   instructionId: tradePending.instructionId,
   content: "모니터를 5만원에 구매하고 싶습니다.",
+  interactionType: "offer",
   needsApproval: false,
 });
 ok("거래 룸은 항상 승인 필요", held.requiresApproval === true);
@@ -267,6 +272,7 @@ ok("승인 후 상대에게 보임", founderView2.messages.some((m) => m.content
 
 // 합의 확정 (Receipt) — 제안 받은 쪽(founder)만 확정 가능
 const proposal = founderView2.messages.find((m) => m.content.includes("5만원"));
+ok("타입드 Interaction(offer) 저장·전달 (Bend 1)", proposal.interactionType === "offer");
 const selfConfirm = await alice.fetch(`/api/rooms/${tradeRoom.roomId}/receipts`, post({ proposalMessageId: proposal.id }));
 ok("자기 제안 확정 차단 403", selfConfirm.status === 403);
 const receipt = await admin.json(`/api/rooms/${tradeRoom.roomId}/receipts`, post({ proposalMessageId: proposal.id }));

@@ -427,8 +427,12 @@ model Message {
   senderAgentId String
   authorKind    AuthorKind    @default(agent)
   content       String
+  // 타입드 Interaction (ROOM_REDESIGN Bend 1): 발화의 행위 종류. 채팅이 아니라 구조화 상호작용.
+  interactionType String      @default("statement")
   // v1 Philosophy-for-AI 최소형: [{type: claim|evidence|interpretation|responsibility, text}]
   claims        Json?
+  // 구조화 페이로드(offer terms, 책임/근거 등) — 사람용 content와 별개
+  payload       Json?
   status        MessageStatus @default(pending)
   approval      ApprovalState @default(none)
   inReplyToId   String?

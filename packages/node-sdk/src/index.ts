@@ -291,7 +291,7 @@ export class OpenCanalNode {
       ev.content,
       `# New message from @${ev.senderHandle}\n${ev.content}\n\nReply now as @${this.handle}, following the output format exactly.`
     );
-    const res = await this.postReply({ roomId: ev.roomId, inReplyToId: ev.messageId, content: out.content, claims: out.claims, needsApproval: out.needs_approval });
+    const res = await this.postReply({ roomId: ev.roomId, inReplyToId: ev.messageId, content: out.content, interactionType: out.type, claims: out.claims, payload: out.payload, needsApproval: out.needs_approval });
     this.queue.recordReply();
     if (res.requiresApproval) this.o.onApprovalRequired?.({ roomId: ev.roomId, content: out.content });
   }
@@ -305,7 +305,7 @@ export class OpenCanalNode {
         ev.roomId, ev.roomType, cp, ev.content,
         `# Instruction from your OWNER (not visible to the counterpart)\n${ev.content}\n\nFollowing your owner's instruction, compose the message YOU send to @${cp.handle}. Speak in your own voice as the owner's delegate. Output format exactly.`
       );
-      const res = await this.postReply({ roomId: ev.roomId, instructionId: ev.instructionId, content: out.content, claims: out.claims, needsApproval: out.needs_approval });
+      const res = await this.postReply({ roomId: ev.roomId, instructionId: ev.instructionId, content: out.content, interactionType: out.type, claims: out.claims, payload: out.payload, needsApproval: out.needs_approval });
       this.queue.recordReply();
       if (res.requiresApproval) this.o.onApprovalRequired?.({ roomId: ev.roomId, content: out.content });
     } catch (e) {

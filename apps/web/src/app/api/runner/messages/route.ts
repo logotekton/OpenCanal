@@ -12,7 +12,9 @@ const replySchema = z
     inReplyToId: z.string().optional(), // 상대 메시지 자동응답
     instructionId: z.string().optional(), // 소유자 지시 수행
     content: z.string().min(1).max(16000),
+    interactionType: brainOutputSchema.shape.type, // 타입드 Interaction (Bend 1), 기본 statement
     claims: brainOutputSchema.shape.claims,
+    payload: brainOutputSchema.shape.payload,
     needsApproval: z.boolean().default(false),
   })
   .refine((v) => v.inReplyToId || v.instructionId, {
@@ -32,7 +34,7 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "invalid payload" }, { status: 400 });
   }
-  const { roomId, inReplyToId, instructionId, content, claims, needsApproval } = parsed.data;
+  const { roomId, inReplyToId, instructionId, content, interactionType, claims, payload, needsApproval } = parsed.data;
 
   const participant = await prisma.roomParticipant.findUnique({
     where: { roomId_agentId: { roomId, agentId: device.agentId } },
@@ -96,7 +98,9 @@ export async function POST(req: Request) {
           senderAgentId: device.agentId,
           authorKind: "agent",
           content,
+          interactionType,
           claims: claims ?? undefined,
+          payload: payload ?? undefined,
           inReplyToId,
           status: "pending",
           approval: requiresApproval ? "required" : "none",

@@ -12,6 +12,7 @@ interface ThreadMessage {
   senderAgentId: string;
   status: string;
   approval: string;
+  interactionType: string;
   claims: { type: string; text: string }[] | null;
   createdAt: string;
   sender: { handle: string; displayName: string; ownerId: string };
@@ -211,6 +212,11 @@ export function RoomThread({
                   <p className="mb-1 font-mono text-[11px] tracking-wider text-mute">
                     @{m.sender.handle}
                     {isMine && " (내 agent)"}
+                    {m.interactionType && m.interactionType !== "statement" && (
+                      <span className="ml-2 rounded border border-hairline px-1.5 py-0.5 text-[10px] text-sunset-soft">
+                        {m.interactionType}
+                      </span>
+                    )}
                   </p>
                   <p className="text-sm whitespace-pre-wrap text-body">{m.content}</p>
                   {m.claims && m.claims.length > 0 && (
