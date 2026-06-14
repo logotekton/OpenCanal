@@ -416,6 +416,80 @@ const capBad = await fetch(`${BASE}/api/runner/capabilities`, {
 });
 ok("잘못된 capability 400", capBad.status === 400);
 
+// ── 9e. 텔레그램 브리지 contract (R1) ──
+console.log("9e. 텔레그램 브리지 (R1)");
+const BRIDGE_SECRET = process.env.BRIDGE_INTERNAL_SECRET ?? "dev-bridge-local-0614";
+const bridgeHeaders = { "Content-Type": "application/json", "x-bridge-secret": BRIDGE_SECRET };
+const aliceChatId = `tg-${suffix}`;
+
+const noSecret = await fetch(`${BASE}/api/bridge/pair`, post({ code: "X", chatId: aliceChatId }));
+ok("브리지 시크릿 없이 401", noSecret.status === 401);
+
+const bridgePairing = await alice.json("/api/bridge/pairing", { method: "POST" });
+ok("브리지 페어링 코드 발급", !!bridgePairing.code);
+const tgPaired = await fetch(`${BASE}/api/bridge/pair`, {
+  method: "POST",
+  headers: bridgeHeaders,
+  body: JSON.stringify({ code: bridgePairing.code, chatId: aliceChatId }),
+});
+ok("chatId 연결 성공", tgPaired.status === 200);
+const codeReuse = await fetch(`${BASE}/api/bridge/pair`, {
+  method: "POST",
+  headers: bridgeHeaders,
+  body: JSON.stringify({ code: bridgePairing.code, chatId: aliceChatId }),
+});
+ok("소비된 코드 재사용 400", codeReuse.status === 400);
+
+const outbox = await (
+  await fetch(`${BASE}/api/bridge/outbox?since=${encodeURIComponent(new Date(0).toISOString())}`, {
+    headers: bridgeHeaders,
+  })
+).json();
+ok("outbox가 연결된 chat 알림 제공", outbox.notifications.some((n) => n.chatId === aliceChatId));
+
+// 텔레그램 대리 승인 — 새 거래 제안을 브리지로 승인
+const brRoom = await alice.json(
+  "/api/rooms",
+  post({ targetAgentId: founderAgent.id, initiatorAgentId: aliceAgent.id, type: "trade" })
+);
+const brIns = await alice.json(
+  `/api/rooms/${brRoom.roomId}/instructions`,
+  post({ content: "브리지 승인 테스트 제안" })
+);
+const brPending = (await aliceRunner.inbox()).instructions.find(
+  (i) => i.instructionId === brIns.instructionId
+);
+await aliceRunner.reply({
+  roomId: brRoom.roomId,
+  instructionId: brPending.instructionId,
+  content: "브리지로 승인할 제안입니다.",
+  needsApproval: false,
+});
+const brView = await alice.json(`/api/rooms/${brRoom.roomId}/messages`);
+const brHeld = brView.messages.find((m) => m.content.includes("브리지로 승인"));
+ok("거래 제안 승인 대기(브리지)", brHeld?.approvalRequest?.state === "pending");
+
+const badDec = await fetch(`${BASE}/api/bridge/approve`, {
+  method: "POST",
+  headers: bridgeHeaders,
+  body: JSON.stringify({ chatId: aliceChatId, approvalId: brHeld.approvalRequest.id, decision: "maybe" }),
+});
+ok("브리지 잘못된 decision 400", badDec.status === 400);
+const unlinkedApprove = await fetch(`${BASE}/api/bridge/approve`, {
+  method: "POST",
+  headers: bridgeHeaders,
+  body: JSON.stringify({ chatId: "tg-nobody", approvalId: brHeld.approvalRequest.id, decision: "approved" }),
+});
+ok("미연결 chat 승인 404", unlinkedApprove.status === 404);
+const brApprove = await fetch(`${BASE}/api/bridge/approve`, {
+  method: "POST",
+  headers: bridgeHeaders,
+  body: JSON.stringify({ chatId: aliceChatId, approvalId: brHeld.approvalRequest.id, decision: "approved" }),
+});
+ok("브리지 대리 승인 200", brApprove.status === 200);
+const brFounderView = await admin.json(`/api/rooms/${brRoom.roomId}/messages`);
+ok("브리지 승인 후 상대에게 전달", brFounderView.messages.some((m) => m.content.includes("브리지로 승인")));
+
 // ── 10. 지시 실패 보고 ──
 console.log("10. 지시 실패 보고");
 const failIns = await alice.json(

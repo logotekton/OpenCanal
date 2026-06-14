@@ -2,6 +2,7 @@ import Link from "next/link";
 import { prisma } from "@opencanal/db";
 import { requireUser } from "@/lib/session";
 import { MarkAllRead } from "./mark-all-read";
+import { BridgePanel } from "./bridge-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +39,10 @@ export default async function NotificationsPage() {
             <p className="eyebrow mb-2">NOTIFICATIONS</p>
             <h1 className="display-md">알림</h1>
           </div>
-          <MarkAllRead />
+          <div className="flex items-center gap-2">
+            <BridgePanel />
+            <MarkAllRead />
+          </div>
         </div>
 
         {notifications.length === 0 ? (

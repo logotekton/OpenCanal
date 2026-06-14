@@ -3,9 +3,9 @@
 > ## ▶ 다음 작업 (콜드 재개 진입점)
 > **로드맵 R0~R5 코드 완수.** 남은 건 외부 시크릿이 필요한 항목 + 선택 후속.
 > 완료: R0(라이브 증명) · R1 디렉토리 · R2(노드 SDK) · R3(평판 v1+영수증 이행/분쟁+ingest 경로) · R4(Commerce Room) · R5(capability 생태계).
-> 잔여 외부의존(시크릿 주입 시 가동): ① R0 OpenCrab 페르소나 실증(ocm_ 토큰) ② R1 텔레그램 브리지(봇 토큰 + /api/bridge/pair) ③ R3 ingest 실제 ontology_ingest 도구명/호출 확인(ocm_ 토큰).
+> 잔여 외부의존(코드 완성 — 시크릿만 주입하면 가동): ① R0 OpenCrab 페르소나 실증(ocm_ 토큰) ② R1 텔레그램 브리지(TELEGRAM_BOT_TOKEN — 코드/엔드포인트/워커 완성) ③ R3 ingest 실제 ontology_ingest 도구명/호출 확인(ocm_ 토큰).
 > 선택 후속: 러너 자체를 node-sdk 위로 재구현(R2), capability 소유자 수동 편집 UI, 평판 trustScore 디렉토리 노출.
-> 재개 순서: ① 이 파일 + docs/ROADMAP.md 읽기 ② `docker compose up -d` (DB) ③ web(next build→start)/gateway 기동 ④ 잔여/후속 착수 ⑤ 단계별 커밋(main + review-head re-parent on 8b8917e) + smoke(65+10)+integration(5)로 검증.
+> 재개 순서: ① 이 파일 + docs/ROADMAP.md 읽기 ② `docker compose up -d` (DB) ③ web(next build→start)/gateway 기동 ④ 잔여/후속 착수 ⑤ 단계별 커밋(main + review-head re-parent on 8b8917e) + smoke(75+10)+integration(5)로 검증.
 > git: main 로컬 커밋 완료(R3 6a8f8e1·R4 bcdc548·R5). **푸시 보류** — origin push는 사용자 명시 승인 필요(분류기가 차단). 커밋 메시지는 반드시 `git commit -F <file>` (bash에서 `@'...'@` 금지).
 
 
@@ -17,7 +17,7 @@
 AGI 시대 개인 agent가 개인을 대신한다 → 검증된 agent 플랫폼. 경쟁(Moltbot/OpenClaw/Hermes)과 런타임으로 경쟁하지 않고, 그들이 OpenCanal 검증 노드가 되게 한다(R2 어댑터). 상세: docs/ROADMAP.md, 메모리 strategy-positioning.
 
 ## 베이스라인 (완료)
-MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(65) + apps/gateway/scripts/smoke2.mjs(10) + node-sdk integration(5). 검증 루틴: `next build` + tsc(gateway/runner/node-sdk/shared) + tsup + 두 smoke + integration(`pnpm --filter @opencanal/node-sdk exec tsx scripts/integration.ts`). 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d. 주의: tsx watch(gateway dev)가 @prisma/client DLL을 잡으면 `prisma generate`가 EPERM — 게이트웨이 종료 후 generate.
+MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(75) + apps/gateway/scripts/smoke2.mjs(10) + node-sdk integration(5). 검증 루틴: `next build` + tsc(gateway/runner/node-sdk/shared) + tsup + 두 smoke + integration(`pnpm --filter @opencanal/node-sdk exec tsx scripts/integration.ts`). 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d. 주의: tsx watch(gateway dev)가 @prisma/client DLL을 잡으면 `prisma generate`가 EPERM — 게이트웨이 종료 후 generate.
 
 ## 체크리스트
 
@@ -29,7 +29,7 @@ MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs
 ### R1 — 배포·마찰 (docs/R1-distribution.md)
 - [x] 디렉토리 UI /directory — 검색·유형필터·검증우선, 브라우저 검증(카드 50, 네비 링크), next build 컴파일 확인
 - [x] 러너 설치 가이드 (엔드유저 npx 흐름)
-- [~] 텔레그램 브리지: 설계 완료(롱폴링/지시/승인/푸시), 봇 토큰 + `/api/bridge/pair`(runner-auth 재활용) 구현 시 가동 — R1 잔여
+- [x] 텔레그램 브리지: 구현 완료 — TelegramLink/BridgePairing 모델 + /api/bridge/{pairing,pair,outbox,approve}(x-bridge-secret 내부인증, prod 기본시크릿 거부) + apps/bridge 워커(롱폴링 /pair·인라인 승인버튼·알림 푸시, TELEGRAM_BOT_TOKEN 없으면 idle) + 알림 페이지 연결 패널. decideApproval 공유 lib로 추출(웹/브리지 공유). **봇 토큰만 주입하면 가동.** smoke 9e(10건)로 contract+대리승인 E2E 검증
 - [x] 검증: web build, smoke 41+10
 
 ### R2 — 노드 프로토콜 & 어댑터 (최대 베팅) ✅ 핵심 완료
