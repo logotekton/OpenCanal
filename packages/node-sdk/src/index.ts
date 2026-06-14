@@ -23,6 +23,7 @@ import {
   type ManualProfileConfig,
   type CapabilityDecl,
 } from "@opencanal/shared";
+import { RoomQueue } from "./queue";
 
 export interface BrainInput {
   systemPrompt: string;
@@ -46,6 +47,12 @@ export interface OpenCanalNodeOptions {
    * All capabilities live inside the approval envelope (requiresApproval defaults true).
    */
   capabilities?: CapabilityDecl[];
+  /** Display name for the constitution. Defaults to the agent handle. */
+  displayName?: string;
+  /** Per-room FIFO + worker-pool concurrency + hourly reply cap (protects host LLM quota). */
+  limits?: { concurrency?: number; repliesPerHour?: number };
+  /** Called after each (re)connect's drain — e.g. to ingest room results into host memory. */
+  onConnect?: () => void | Promise<void>;
   /** Called when a message is held for the owner's approval (trade / commitment). */
   onApprovalRequired?: (info: { roomId: string; content: string }) => void;
   logger?: (msg: string) => void;
@@ -84,8 +91,8 @@ export class OpenCanalNode {
   private ws: WebSocket | null = null;
   private attempt = 0;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
-  private busy = 0;
   private inflight = new Set<string>();
+  private queue: RoomQueue;
   private manualPersona = "";
   private capabilities: { label: string; description?: string; requiresApproval: boolean }[] = [];
   private handle = "agent";
@@ -93,6 +100,12 @@ export class OpenCanalNode {
 
   constructor(options: OpenCanalNodeOptions) {
     this.o = options;
+    this.displayName = options.displayName ?? "agent";
+    this.queue = new RoomQueue(
+      options.limits?.concurrency ?? 3,
+      options.limits?.repliesPerHour ?? 60,
+      (m) => this.log(m)
+    );
   }
 
   private log(m: string) {
@@ -117,12 +130,22 @@ export class OpenCanalNode {
       this.attempt = 0;
       this.log("[node] connected");
       this.heartbeat = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "heartbeat", busy: this.busy > 0 }));
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "heartbeat", busy: this.queue.busy }));
       }, 20_000);
-      // R5: 호스트 런타임 skill을 OpenCanal capability로 동기화한 뒤 inbox를 드레인한다
+      // R5: 호스트 런타임 skill을 OpenCanal capability로 동기화한 뒤 inbox를 드레인하고, onConnect 훅 실행
       this.syncCapabilities()
         .catch((e) => this.log(`[node] capability sync failed: ${e.message}`))
-        .finally(() => this.drain().catch((e) => this.log(`[node] drain failed: ${e.message}`)));
+        .finally(() =>
+          this.drain()
+            .catch((e) => this.log(`[node] drain failed: ${e.message}`))
+            .finally(() => {
+              if (this.o.onConnect) {
+                Promise.resolve(this.o.onConnect()).catch((e) =>
+                  this.log(`[node] onConnect failed: ${(e as Error).message}`)
+                );
+              }
+            })
+        );
     });
     ws.on("message", (raw) => {
       let ev: ServerEvent;
@@ -135,9 +158,9 @@ export class OpenCanalNode {
         this.handle = ev.handle;
         this.log(`[node] hello @${ev.handle} pending=${ev.pendingCount}`);
       } else if (ev.type === "room.message") {
-        void this.runOnce(`msg:${ev.messageId}`, () => this.answer(ev));
+        this.dispatch(`msg:${ev.messageId}`, ev.roomId, () => this.answer(ev));
       } else if (ev.type === "room.instruction") {
-        void this.runOnce(`ins:${ev.instructionId}`, () => this.execInstruction(ev));
+        this.dispatch(`ins:${ev.instructionId}`, ev.roomId, () => this.execInstruction(ev));
       }
     });
     ws.on("close", (code) => {
@@ -155,19 +178,22 @@ export class OpenCanalNode {
     });
   }
 
-  /** in-flight dedup so a duplicate push+drain doesn't burn two LLM calls. */
-  private async runOnce(key: string, job: () => Promise<void>): Promise<void> {
+  /**
+   * in-flight dedup (a duplicate push+drain doesn't burn two LLM calls) + per-room FIFO queue
+   * with worker-pool concurrency and an hourly reply cap (host LLM quota protection).
+   */
+  private dispatch(key: string, roomId: string, job: () => Promise<void>): void {
     if (this.inflight.has(key)) return;
     this.inflight.add(key);
-    this.busy++;
-    try {
-      await job();
-    } catch (e) {
-      this.log(`[node] job ${key} failed: ${(e as Error).message}`);
-    } finally {
-      this.inflight.delete(key);
-      this.busy--;
-    }
+    this.queue.enqueue(roomId, async () => {
+      try {
+        await job();
+      } catch (e) {
+        this.log(`[node] job ${key} failed: ${(e as Error).message}`);
+      } finally {
+        this.inflight.delete(key);
+      }
+    });
   }
 
   private async inbox(): Promise<InboxResponse> {
@@ -193,7 +219,13 @@ export class OpenCanalNode {
     const manual = inbox.sources.find((s) => s.kind === "manual_profile");
     if (manual) {
       const c = manual.config as ManualProfileConfig;
-      this.manualPersona = [c.tastes && `Tastes: ${c.tastes}`, c.hobbies && `Hobbies: ${c.hobbies}`, c.skills && `Skills: ${c.skills}`]
+      this.manualPersona = [
+        c.tastes && `Tastes: ${c.tastes}`,
+        c.hobbies && `Hobbies: ${c.hobbies}`,
+        c.skills && `Skills: ${c.skills}`,
+        c.values && `Values: ${c.values}`,
+        c.extra && c.extra,
+      ]
         .filter(Boolean)
         .join("\n");
     }
@@ -202,8 +234,8 @@ export class OpenCanalNode {
       description: c.description ?? undefined,
       requiresApproval: c.requiresApproval,
     }));
-    for (const m of inbox.messages) void this.runOnce(`msg:${m.messageId}`, () => this.answer(m));
-    for (const i of inbox.instructions) void this.runOnce(`ins:${i.instructionId}`, () => this.execInstruction(i));
+    for (const m of inbox.messages) this.dispatch(`msg:${m.messageId}`, m.roomId, () => this.answer(m));
+    for (const i of inbox.instructions) this.dispatch(`ins:${i.instructionId}`, i.roomId, () => this.execInstruction(i));
   }
 
   private async history(roomId: string): Promise<string> {
@@ -257,6 +289,7 @@ export class OpenCanalNode {
       `# New message from @${ev.senderHandle}\n${ev.content}\n\nReply now as @${this.handle}, following the output format exactly.`
     );
     const res = await this.postReply({ roomId: ev.roomId, inReplyToId: ev.messageId, content: out.content, claims: out.claims, needsApproval: out.needs_approval });
+    this.queue.recordReply();
     if (res.requiresApproval) this.o.onApprovalRequired?.({ roomId: ev.roomId, content: out.content });
   }
 
@@ -270,6 +303,7 @@ export class OpenCanalNode {
         `# Instruction from your OWNER (not visible to the counterpart)\n${ev.content}\n\nFollowing your owner's instruction, compose the message YOU send to @${cp.handle}. Speak in your own voice as the owner's delegate. Output format exactly.`
       );
       const res = await this.postReply({ roomId: ev.roomId, instructionId: ev.instructionId, content: out.content, claims: out.claims, needsApproval: out.needs_approval });
+      this.queue.recordReply();
       if (res.requiresApproval) this.o.onApprovalRequired?.({ roomId: ev.roomId, content: out.content });
     } catch (e) {
       await fetch(`${this.o.platformUrl}/api/runner/instructions/${ev.instructionId}/fail`, {

@@ -17,6 +17,7 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@opencanal/node-sdk": "workspace:*",
     "@opencanal/shared": "workspace:*",
     "@types/ws": "^8.5.13",
     "tsup": "^8.4.0",
@@ -24,7 +25,7 @@
     "typescript": "^5.8.0"
   },
   "tsup": {
-    "noExternal": ["@opencanal/shared"]
+    "noExternal": ["@opencanal/shared", "@opencanal/node-sdk"]
   },
   "engines": {
     "node": ">=20"

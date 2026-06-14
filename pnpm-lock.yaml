@@ -70,6 +70,9 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
     devDependencies:
+      '@opencanal/node-sdk':
+        specifier: workspace:*
+        version: link:../../packages/node-sdk
       '@opencanal/shared':
         specifier: workspace:*
         version: link:../../packages/shared

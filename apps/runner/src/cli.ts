@@ -4,11 +4,11 @@
 
 import { createInterface } from "node:readline/promises";
 import { hostname } from "node:os";
+import { OpenCanalNode } from "@opencanal/node-sdk";
 import { loadConfig, saveConfig, configPath } from "./config";
 import { PlatformApi } from "./api";
 import { OpencrabClient } from "./sources/opencrab";
-import { AgentLoop } from "./agent-loop";
-import { startWsClient } from "./ws-client";
+import { ReceiptIngester } from "./ingest";
 import { ClaudeAdapter } from "./brain/claude";
 import { CodexAdapter } from "./brain/codex";
 import type { BrainAdapter } from "./brain/adapter";
@@ -104,9 +104,28 @@ async function cmdStart(): Promise<void> {
 
   const api = new PlatformApi(config);
   const brain = makeBrain(config.brain.provider);
-  const loop = new AgentLoop(config, api, brain, {
-    handle: config.handle ?? "agent",
-    displayName: config.handle ?? "agent",
+  // OpenCrab: 페르소나 컨텍스트(persona 훅) + 거래 이력 ingest(onConnect)에 쓰인다.
+  const opencrab = config.opencrab?.token
+    ? new OpencrabClient(config.opencrab.token, config.opencrab.mcpUrl)
+    : null;
+  const ingester = new ReceiptIngester(api, opencrab);
+
+  // 러너 = node-sdk(OpenCanal Node Protocol) 위의 얇은 래퍼.
+  // 프로토콜(페어링/WS/드레인/멱등/constitution/큐/capability)은 SDK가, 두뇌·페르소나·ingest는 러너가.
+  const node = new OpenCanalNode({
+    platformUrl: config.platformUrl,
+    gatewayWsUrl: config.gatewayUrl,
+    deviceToken: config.deviceToken,
+    displayName: config.handle,
+    brain: ({ systemPrompt, userPrompt }) => brain.complete(systemPrompt, userPrompt),
+    persona: opencrab ? (q) => opencrab.personaContext(q) : undefined,
+    limits: { concurrency: config.limits.concurrency, repliesPerHour: config.limits.repliesPerHour },
+    onConnect: () => {
+      void ingester.run();
+    },
+    onApprovalRequired: ({ roomId }) =>
+      console.log(`[runner] 승인 대기 — 웹에서 확인하세요 (room ${roomId})`),
+    logger: (m) => console.log(m),
   });
 
   console.log(`OpenCanal Runner v${VERSION}`);
@@ -114,7 +133,7 @@ async function cmdStart(): Promise<void> {
   console.log(`  brain: ${brain.name}${config.opencrab ? ` · OpenCrab pack: ${config.opencrab.packId}` : ""}`);
   console.log(`  limits: ${config.limits.concurrency} concurrent, ${config.limits.repliesPerHour}/hour`);
 
-  startWsClient(config, loop);
+  await node.start(); // WS가 프로세스를 살려둔다 (별도 listen 포트 없음)
 }
 
 async function cmdStatus(): Promise<void> {

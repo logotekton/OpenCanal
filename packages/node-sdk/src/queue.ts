@@ -1,5 +1,6 @@
 // 멀티룸 병렬 처리: 같은 룸은 FIFO 순차(대화 순서 보장), 룸 간에는 워커 풀 병렬.
-// 전역 시간당 캡으로 사용자 본인의 구독 쿼터를 보호한다.
+// 전역 시간당 캡으로 호스트 런타임의 구독 쿼터(LLM 호출)를 보호한다.
+// 러너·외부 어댑터 공통 — OpenCanalNode가 사용한다.
 
 export class RoomQueue {
   private queues = new Map<string, (() => Promise<void>)[]>();
@@ -9,7 +10,8 @@ export class RoomQueue {
 
   constructor(
     private concurrency: number,
-    private repliesPerHour: number
+    private repliesPerHour: number,
+    private log: (msg: string) => void = () => {}
   ) {}
 
   get busy(): boolean {
@@ -32,9 +34,9 @@ export class RoomQueue {
   enqueue(roomId: string, job: () => Promise<void>): void {
     const wait = this.capWaitMs();
     if (wait > 0) {
-      // 캡 도달: 드롭하지 않고 여유가 생길 때까지 미뤘다 재시도 (지시 유실 방지)
-      console.warn(
-        `[queue] hourly reply cap (${this.repliesPerHour}) reached — deferring job for room ${roomId} by ${Math.ceil(wait / 1000)}s`
+      // 캡 도달: 드롭하지 않고 여유가 생길 때까지 미뤘다 재시도 (작업 유실 방지)
+      this.log(
+        `[queue] hourly reply cap (${this.repliesPerHour}) reached — deferring room ${roomId} by ${Math.ceil(wait / 1000)}s`
       );
       setTimeout(() => this.enqueue(roomId, job), wait + 100);
       return;
@@ -47,7 +49,7 @@ export class RoomQueue {
 
   private pump(): void {
     if (this.running >= this.concurrency) return;
-    // Pick the next room that has work and isn't already being processed
+    // 작업이 있고 아직 처리 중이 아닌 다음 룸을 고른다
     for (const [roomId, jobs] of this.queues) {
       if (this.active.has(roomId) || jobs.length === 0) continue;
       const job = jobs.shift()!;
@@ -55,7 +57,7 @@ export class RoomQueue {
       this.active.add(roomId);
       this.running++;
       job()
-        .catch((err) => console.error(`[queue] job failed (room ${roomId}):`, err))
+        .catch((err) => this.log(`[queue] job failed (room ${roomId}): ${err}`))
         .finally(() => {
           this.active.delete(roomId);
           this.running--;
