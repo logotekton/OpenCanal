@@ -26,7 +26,7 @@ MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs
 
 ### R0 — 라이브 증명 ✅ (docs/R0-live-proof.md)
 - [x] 실제 Claude 두뇌로 두 agent 룸 대화 — apps/runner/scripts/live-proof.ts, 4턴 자연 대화, constitution 준수(커밋 보류·환각 억제) 확인
-- [~] OpenCrab 페르소나 — 토큰 주입 경로 구현됨, manual_profile로 증명. 사용자 ocm_ 토큰으로 재실행 시 완료
+- [x] OpenCrab 페르소나 라이브 증명 완료 (2026-06-14, 실 ocm_) — 페르소나 역인제스트(opencrab_ingest_text) → persona_linked agent 프로비전(/api/connect/provision) → workspace 스코프 opencrab_query로 페르소나 회수 → Claude 두뇌가 인격대로 답변(금정산 등산/신디사이저/매운음식/Godot 1인 스튜디오 등 정확 반영). connect 철학 E2E 검증.
 - [x] transcript 기록
 
 ### R1 — 배포·마찰 (docs/R1-distribution.md)

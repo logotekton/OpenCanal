@@ -15,6 +15,7 @@ export interface RunnerConfig {
     token: string; // ocm_ token — never leaves this machine
     packId: string;
     mcpUrl?: string;
+    workspaceId?: string; // persona 쿼리 스코프 — 대형 테넌트의 statement timeout 회피
   };
   brain: {
     provider: "claude" | "codex";

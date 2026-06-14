@@ -119,7 +119,7 @@ async function cmdStart(): Promise<void> {
     handle: config.handle,
     displayName: config.handle,
     brain: ({ systemPrompt, userPrompt }) => brain.complete(systemPrompt, userPrompt),
-    persona: opencrab ? (q) => opencrab.personaContext(q) : undefined,
+    persona: opencrab ? (q) => opencrab.personaContext(q, 5, config.opencrab?.workspaceId) : undefined,
     limits: { concurrency: config.limits.concurrency, repliesPerHour: config.limits.repliesPerHour },
     onConnect: () => {
       void ingester.run();

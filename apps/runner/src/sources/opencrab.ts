@@ -81,13 +81,33 @@ export class OpencrabClient {
     return { packId, manifestHash, spaces: [] };
   }
 
-  /** Query the user's ontology for persona context relevant to a question (opencrab_query). */
-  async personaContext(question: string, limit = 5): Promise<string> {
+  /**
+   * Query the user's ontology for persona context (opencrab_query).
+   * workspaceId로 스코프하면 대형 테넌트의 statement timeout을 피하고 해당 페르소나만 검색한다.
+   */
+  async personaContext(question: string, limit = 5, workspaceId?: string): Promise<string> {
     try {
-      const resultText = await this.callTool("opencrab_query", { query: question, top_k: limit });
+      const args: Record<string, unknown> = { query: question, top_k: limit };
+      if (workspaceId) args.workspace_id = workspaceId;
+      const resultText = await this.callTool("opencrab_query", args);
       return resultText.slice(0, 4000);
     } catch (err) {
       return `(OpenCrab query failed: ${err instanceof Error ? err.message : String(err)})`;
+    }
+  }
+
+  /** Ingest arbitrary text into the ontology (opencrab_ingest_text). Returns workspace/package ids. */
+  async ingestText(
+    title: string,
+    content: string,
+    createPack = false
+  ): Promise<{ workspaceId: string | null; packageId: string | null }> {
+    const text = await this.callTool("opencrab_ingest_text", { title, content, create_pack: createPack });
+    try {
+      const j = JSON.parse(text) as { workspace_id?: string; package_id?: string; package?: { package_id?: string } };
+      return { workspaceId: j.workspace_id ?? null, packageId: j.package?.package_id ?? j.package_id ?? null };
+    } catch {
+      return { workspaceId: null, packageId: null };
     }
   }
 
@@ -112,11 +132,7 @@ export class OpencrabClient {
       .filter(Boolean)
       .join("\n");
     try {
-      await this.callTool("opencrab_ingest_text", {
-        title: `OpenCanal 거래 영수증 ${receipt.id} (${receipt.status})`,
-        content,
-        create_pack: false,
-      });
+      await this.ingestText(`OpenCanal 거래 영수증 ${receipt.id} (${receipt.status})`, content, false);
       return true;
     } catch {
       return false;

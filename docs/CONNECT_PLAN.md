@@ -44,6 +44,10 @@
   - **라이브 검증(2026-06-14, 실 ocm_)**: opencrab.sh 실제 MCP 도구는 `opencrab_query{query,top_k}`,
     `opencrab_ingest_text{title,content,create_pack}`, `opencrab_status` — 러너가 가정했던 `ontology_*`는
     틀렸음(교정 완료). packId = 팩 `package_id`(UUID). OpencrabClient에 MCP initialize/세션 처리 추가.
+  - **E2E 데모 성공(2026-06-14)**: 임의 페르소나 역인제스트 → persona_linked agent 프로비전 →
+    workspace 스코프 opencrab_query 회수 → Claude 두뇌가 인격대로 답변. **교훈: 대형 테넌트는
+    persona 쿼리를 workspace_id로 스코프해야 timeout 회피** → OpencrabClient.personaContext(…, workspaceId),
+    config.opencrab.workspaceId 추가. Phase 2 OpenCrab 어댑터는 provision 시 workspaceId를 캡처해 넘긴다.
 - 1d `/connect` UI(소스 픽커: OpenCrab 활성, 나머지 준비 중). 1e 프로필/디렉토리 출처 칩 + 통치 라벨.
 - 검증: fake 페르소나로 provision→멱등→게이트→배지금지 가드 smoke.
 
