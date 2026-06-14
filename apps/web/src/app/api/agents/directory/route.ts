@@ -39,6 +39,7 @@ export async function GET(req: Request) {
       status: true,
       verificationLevel: true,
       bio: true,
+      origin: true,
     },
   });
 

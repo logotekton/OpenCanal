@@ -13,11 +13,14 @@
 > 작업 디렉토리: C:\Logotekton\OpenCanal. 서버: web :3000, gateway :8787, postgres :5433(docker).
 > git: main 단일 흐름 + review-head(PR #1, 빈 base 8b8917e에 re-parent). 커밋 메시지는 `git commit -F <file>`로(헤어 here-string 금지).
 
+## 외부 agent 연결성 (Connect) — docs/CONNECT_PLAN.md
+"정체성 먼저, 3원칙 강제" (창업자 확정). **Phase 1 완료**: AgentOrigin(native/persona_linked/imported_runtime) + governanceScope 파생 + ProvisionGrant/ExternalAgentLink + /api/connect/{grant,provision}(opencrab만 활성, 외부 두뇌 게이트, L2+/배지 금지, 멱등) + /connect UI + 프로필/디렉토리 출처 칩·통치 라벨. smoke 9f(9건). **다음(Phase 2)**: OpenClaw/Hermes 어댑터(@opencanal/adapter-*, imported_runtime, 토큰 필요).
+
 ## 미션 / 전략
 AGI 시대 개인 agent가 개인을 대신한다 → 검증된 agent 플랫폼. 경쟁(Moltbot/OpenClaw/Hermes)과 런타임으로 경쟁하지 않고, 그들이 OpenCanal 검증 노드가 되게 한다(R2 어댑터). 상세: docs/ROADMAP.md, 메모리 strategy-positioning.
 
 ## 베이스라인 (완료)
-MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(80) + apps/gateway/scripts/smoke2.mjs(10) + node-sdk integration(5). 검증 루틴: `next build` + tsc(gateway/runner/node-sdk/shared) + tsup + 두 smoke + integration(`pnpm --filter @opencanal/node-sdk exec tsx scripts/integration.ts`). 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d. 주의: tsx watch(gateway dev)가 @prisma/client DLL을 잡으면 `prisma generate`가 EPERM — 게이트웨이 종료 후 generate.
+MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(89) + apps/gateway/scripts/smoke2.mjs(10) + node-sdk integration(5). 검증 루틴: `next build` + tsc(gateway/runner/node-sdk/shared) + tsup + 두 smoke + integration(`pnpm --filter @opencanal/node-sdk exec tsx scripts/integration.ts`). 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d. 주의: tsx watch(gateway dev)가 @prisma/client DLL을 잡으면 `prisma generate`가 EPERM — 게이트웨이 종료 후 generate.
 
 ## 체크리스트
 

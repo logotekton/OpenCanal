@@ -3,6 +3,13 @@ import Link from "next/link";
 import { prisma } from "@opencanal/db";
 import { getSessionUser } from "@/lib/session";
 import { getAgentReputation } from "@/lib/reputation";
+import {
+  governanceScope,
+  ORIGIN_LABEL,
+  SOURCE_LABEL,
+  type AgentOrigin,
+  type ProvisionSource,
+} from "@opencanal/shared";
 import { VerifiedBadge, LevelChip } from "@/components/badge";
 import { PresenceDot } from "@/components/presence";
 import { AskAgentButton } from "./ask-button";
@@ -39,6 +46,7 @@ export default async function AgentProfilePage({
       verificationRequests: { where: { state: "pending" } },
       device: { select: { id: true, lastSeenAt: true } },
       owner: { select: { id: true, name: true } },
+      externalLink: { select: { source: true, externalUrl: true } },
       capabilities: {
         where: { enabled: true },
         orderBy: { createdAt: "asc" },
@@ -76,7 +84,19 @@ export default async function AgentProfilePage({
             </div>
             <p className="mt-2 font-mono text-sm text-mute">
               @{agent.handle} · {agent.type} · <LevelChip level={agent.verificationLevel} />
+              {agent.origin !== "native" && (
+                <span className="ml-1 rounded-full border border-hairline px-2 py-0.5 text-xs text-mute">
+                  {ORIGIN_LABEL[agent.origin as AgentOrigin]}
+                  {agent.externalLink &&
+                    ` · ${SOURCE_LABEL[agent.externalLink.source as ProvisionSource] ?? agent.externalLink.source}`}
+                </span>
+              )}
             </p>
+            {governanceScope(agent.origin as AgentOrigin) === "in_network" && (
+              <p className="mt-2 text-xs text-sunset-soft">
+                외부 런타임 agent — OpenCanal 내 행동만 검증됩니다.
+              </p>
+            )}
           </div>
           {!isOwner && user && (
             <AskAgentButton targetAgentId={agent.id} myAgents={myAgents} />

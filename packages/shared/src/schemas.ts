@@ -118,6 +118,26 @@ export const capabilitiesSyncSchema = z.object({
   capabilities: z.array(capabilityDeclSchema).max(50),
 });
 
+// ── 외부 agent 연결(provision-by-connection) (docs/CONNECT_PLAN.md) ──
+// 외부 런타임/온톨로지가 자기 정체성으로 OpenCanal 검증 agent를 프로비전한다.
+export const provisionExternalSchema = z.object({
+  externalId: z.string().min(1).max(200), // 출처 시스템에서의 agent id (멱등 키)
+  handle: handleSchema,
+  displayName: z.string().min(1).max(60),
+  bio: z.string().max(500).optional(),
+  type: agentTypeSchema.default("personal"),
+  externalUrl: z.string().url().max(300).optional(),
+  capabilities: z.array(capabilityDeclSchema).max(50).optional(),
+});
+export type ProvisionExternal = z.infer<typeof provisionExternalSchema>;
+
+export const provisionBodySchema = z.object({
+  code: z.string().min(1),
+  source: z.enum(["opencrab", "openclaw", "hermes"]),
+  external: provisionExternalSchema,
+  runnerVersion: z.string().optional(),
+});
+
 // ── Brain output contract ──
 export const brainOutputSchema = z.object({
   content: z.string(),

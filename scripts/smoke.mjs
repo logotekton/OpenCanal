@@ -511,6 +511,69 @@ ok("브리지 대리 승인 200", brApprove.status === 200);
 const brFounderView = await admin.json(`/api/rooms/${brRoom.roomId}/messages`);
 ok("브리지 승인 후 상대에게 전달", brFounderView.messages.some((m) => m.content.includes("브리지로 승인")));
 
+// ── 9f. 외부 agent 연결 (provision-by-connection, Connect Phase 1) ──
+console.log("9f. 외부 agent 연결 (provision)");
+const provision = (body) => fetch(`${BASE}/api/connect/provision`, post(body));
+const extId = `crab-ext-${suffix}`;
+const grant1 = await alice.json("/api/connect/grant", { method: "POST" });
+ok("프로비전 코드 발급", !!grant1.code);
+
+// 게이트: 외부 두뇌(hermes)는 아직 차단 (3원칙 강제 후 Phase 2). 게이트는 grant 소비 전.
+const gated = await provision({
+  code: grant1.code,
+  source: "hermes",
+  external: { externalId: extId, handle: `h-${suffix}`, displayName: "H" },
+});
+ok("외부 두뇌 소스 게이트 403", gated.status === 403);
+
+// OpenCrab 정체성 프로비전 (두뇌 네이티브 → persona_linked, 통치 full)
+const prov1 = await (
+  await provision({
+    code: grant1.code,
+    source: "opencrab",
+    external: {
+      externalId: extId,
+      handle: `crab-${suffix}`,
+      displayName: "Crab Agent",
+      bio: "온톨로지 정체성",
+      capabilities: [{ key: "advise.ontology", label: "온톨로지 상담" }],
+    },
+  })
+).json();
+ok("opencrab 정체성 프로비전 → deviceToken", !!prov1.deviceToken && prov1.origin === "persona_linked");
+
+const provInbox = await fetch(`${BASE}/api/runner/inbox`, {
+  headers: { Authorization: `Bearer ${prov1.deviceToken}` },
+});
+ok("프로비전 deviceToken으로 inbox 접근", provInbox.status === 200);
+
+// 원칙 ① provenance ≠ verification: L1(소유자 이메일 티어)일 뿐 L2+/배지 아님
+const dir2 = await alice.json(`/api/agents/directory?q=${encodeURIComponent(`crab-${suffix}`)}`);
+const provAgent = dir2.agents.find((a) => a.id === prov1.agentId);
+ok("프로비전 agent 디렉토리 노출 + origin", provAgent?.origin === "persona_linked");
+ok("provenance ≠ verification (L1, 배지 자동부여 아님)", provAgent?.verificationLevel === "L1");
+
+const provCaps = await alice.json(`/api/agents/${prov1.agentId}/capabilities`);
+ok("프로비전 시 capability 동기화", provCaps.capabilities.some((c) => c.key === "advise.ontology"));
+
+// 멱등: 새 코드로 같은 externalId 재프로비전 → 같은 agent (중복 생성 없음)
+const grant2 = await alice.json("/api/connect/grant", { method: "POST" });
+const prov2 = await (
+  await provision({
+    code: grant2.code,
+    source: "opencrab",
+    external: { externalId: extId, handle: `crab-other-${suffix}`, displayName: "Crab Renamed" },
+  })
+).json();
+ok("멱등 재프로비전 → 동일 agent", prov2.agentId === prov1.agentId);
+
+const badCode = await provision({
+  code: "BADCODE99",
+  source: "opencrab",
+  external: { externalId: `x-${suffix}`, handle: `xx-${suffix}`, displayName: "X" },
+});
+ok("잘못된 프로비전 코드 400", badCode.status === 400);
+
 // ── 10. 지시 실패 보고 ──
 console.log("10. 지시 실패 보고");
 const failIns = await alice.json(

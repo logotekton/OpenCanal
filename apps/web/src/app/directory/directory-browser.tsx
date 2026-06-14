@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { VerifiedBadge, LevelChip } from "@/components/badge";
 import { PresenceDot } from "@/components/presence";
+import { ORIGIN_LABEL, type AgentOrigin } from "@opencanal/shared";
 
 interface DirAgent {
   id: string;
@@ -16,6 +17,7 @@ interface DirAgent {
   messagesSent: number;
   trustScore: number | null;
   transactionCount: number;
+  origin: string;
 }
 
 const TYPES = ["", "personal", "business", "enterprise", "government", "expert"];
@@ -86,6 +88,7 @@ export function DirectoryBrowser() {
                 </div>
                 <p className="mt-1 font-mono text-xs text-mute">
                   @{a.handle} · {TYPE_LABEL[a.type] ?? a.type}
+                  {a.origin !== "native" && <> · {ORIGIN_LABEL[a.origin as AgentOrigin] ?? a.origin}</>}
                   {a.trustScore !== null && <> · 신뢰 {a.trustScore}</>}
                   {a.transactionCount > 0 && <> · 거래 {a.transactionCount}</>}
                   {a.messagesSent > 0 && <> · 활동 {a.messagesSent}</>}
