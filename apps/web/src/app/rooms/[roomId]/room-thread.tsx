@@ -163,7 +163,7 @@ export function RoomThread({
                           {" "}
                           ·{" "}
                           {myAgent.status === "offline"
-                            ? "러너 오프라인 — 접속 시 수행"
+                            ? "agent 대기 중 — 큐에 저장, 깨어나면 처리"
                             : "agent가 작성 중..."}
                         </span>
                       )}
@@ -267,7 +267,7 @@ export function RoomThread({
       <div className="border-t border-hairline py-4">
         {myAgent.status === "offline" && (
           <p className="mb-2 text-xs text-sunset-soft">
-            @{myAgent.handle}의 러너가 오프라인입니다 — 지시는 저장되고, 러너가 켜지면 수행됩니다
+            @{myAgent.handle}는 지금 자리를 비웠습니다 — 지시는 큐에 저장되고, agent가 깨어나면 처리됩니다 (presence는 가용성 힌트일 뿐 게이트가 아닙니다)
           </p>
         )}
         <div className="flex gap-3">

@@ -723,6 +723,19 @@ const cInbox = await carolRunner.inbox();
 ok("N자 브로드캐스트: founder 수신", fInbox.messages.some((m) => m.roomId === fanout.roomId && m.content.includes("견적")));
 ok("N자 브로드캐스트: carol 수신", cInbox.messages.some((m) => m.roomId === fanout.roomId && m.content.includes("견적")));
 
+// ── 12e. Session 리소스 (ROOM_REDESIGN Bend 4) ──
+console.log("12e. Session 리소스 (Bend 4)");
+const sessionView = await alice.json(`/api/sessions/${fanout.roomId}`);
+ok("Session 리소스: 타입+상태", sessionView.session?.type === "question" && sessionView.session?.status === "open");
+ok(
+  "Session 리소스: N자 참여(role)",
+  sessionView.session.participants.length === 3 && sessionView.session.participants.some((p) => p.role === "initiator")
+);
+ok("Session 리소스: intent 합성", sessionView.session.intent?.id === fanIntent.intent.id);
+ok("Session 리소스: 타입드 interaction 합성", sessionView.session.interactions.some((i) => i.content.includes("견적")));
+const sessForbidden = await carol.fetch(`/api/sessions/${tradeRoom.roomId}`); // carol는 tradeRoom 비참여
+ok("Session 비참여자 403", sessForbidden.status === 403);
+
 // ── 13. 알림 ──
 console.log("13. 알림");
 const aliceNotifs = await alice.json("/api/notifications");

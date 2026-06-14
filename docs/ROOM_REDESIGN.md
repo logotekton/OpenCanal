@@ -121,6 +121,14 @@ model Interaction {
 
 각 Bend는 독립 배포·롤백 가능. 앱은 전 과정에서 계속 동작. wedge(숙박/Debate)는 Bend 1~2 수준에서 충분.
 
+## 7. 구현 상태 (2026-06-14 — Bend 1~4 완료)
+- **Bend 1 ✅** Message.interactionType + payload, brainOutput {type,payload} 일반화, room-thread 타입 배지.
+- **Bend 2 ✅** Intent 모델 + Room.intentId, /api/intents, createRoom intentId 링크.
+- **Bend 3 ✅** /api/intents/[id]/fanout(N자 RFQ 룸), 전달/승인 메시지 전참여자 브로드캐스트. (스키마 변경 없음 — RoomParticipant 이미 N자. observer/expert role은 후속.)
+- **Bend 4 ✅(substance)** /api/sessions/[id] 1급 Session 리소스(intent+참여자role+타입드 interaction+result 합성). presence는 이미 게이트가 아니라 가용성 힌트임을 확인(오프라인=inbox 큐) — UI 카피로 명시.
+  - **보류(판단)**: Room→Session **테이블 리네임**은 churn 대비 가치 낮아 보류. Session *의미*는 리소스로 확보됨. 필요 시 후속 코스메틱.
+- 검증: smoke 107 + smoke2 10 + node-sdk integration 5.
+
 ## 6. 리스크 / 열린 질문
 - **레일-퍼스트 콜드스타트**: 프로토콜은 생태계 필요 → *룸 데모를 콜드스타트 wedge로, 코어는 세션/API로* 이중 전략.
 - presence 제거 시 "지금 응답 가능?"의 UX는 큐 + 예상 지연으로 대체.
