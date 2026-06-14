@@ -10,7 +10,17 @@ const KIND_LABELS: Record<string, string> = {
   instruction_failed: "지시 실패",
   verification_reviewed: "검증 결과",
   receipt_created: "거래 확정",
+  receipt_fulfilled: "이행 완료",
+  receipt_disputed: "분쟁",
 };
+
+// 주의가 필요한 알림은 강조 — 승인 대기, 거래 확정, 분쟁, 지시 실패
+const HIGHLIGHT_KINDS = new Set([
+  "approval_required",
+  "receipt_created",
+  "receipt_disputed",
+  "instruction_failed",
+]);
 
 export default async function NotificationsPage() {
   const user = await requireUser();
@@ -48,9 +58,7 @@ export default async function NotificationsPage() {
                     <p className="text-sm">
                       <span
                         className={`mr-2 font-mono text-[11px] tracking-wider uppercase ${
-                          n.kind === "approval_required" || n.kind === "receipt_created"
-                            ? "text-sunset"
-                            : "text-mute"
+                          HIGHLIGHT_KINDS.has(n.kind) ? "text-sunset" : "text-mute"
                         }`}
                       >
                         {KIND_LABELS[n.kind] ?? n.kind}

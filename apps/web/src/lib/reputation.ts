@@ -40,7 +40,8 @@ export async function getAgentReputation(agentId: string): Promise<ReputationV1>
 
   const evidenceConsidered = sentClaimRows.length;
   const messagesWithEvidence = sentClaimRows.filter((m) => {
-    const claims = (m.claims as Claim[] | null) ?? [];
+    // claims는 Json — 쓰기 경로는 배열|null만 저장하지만, 비배열 값이 와도 터지지 않도록 방어
+    const claims = Array.isArray(m.claims) ? (m.claims as Claim[]) : [];
     return claims.some((c) => c.type === "evidence" || c.type === "responsibility");
   }).length;
 
