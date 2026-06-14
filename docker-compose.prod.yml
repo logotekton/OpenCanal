@@ -47,6 +47,8 @@ services:
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       GATEWAY_HTTP_URL: http://gateway:8787
       GATEWAY_INTERNAL_SECRET: ${GATEWAY_INTERNAL_SECRET:?set GATEWAY_INTERNAL_SECRET}
+      # 텔레그램 브리지 사용 시 강한 값으로 설정 (미설정 시 브리지 엔드포인트는 prod에서 거부 = 안전)
+      BRIDGE_INTERNAL_SECRET: ${BRIDGE_INTERNAL_SECRET:-}
       NEXT_PUBLIC_GATEWAY_WS_URL: ${NEXT_PUBLIC_GATEWAY_WS_URL:-ws://localhost:8787}
     depends_on:
       migrate:
@@ -66,6 +68,23 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  # 텔레그램 브리지 (선택) — `docker compose --profile bridge up -d` 로만 기동.
+  # TELEGRAM_BOT_TOKEN 없으면 워커가 exit 0 → restart: on-failure 이므로 재시작 루프 없음.
+  bridge:
+    profiles: ["bridge"]
+    build:
+      context: .
+      dockerfile: apps/bridge/Dockerfile
+    restart: on-failure
+    environment:
+      # `:?` 금지 — 비활성 프로파일이라도 compose가 전역 보간하므로 기본 deploy를 깨뜨린다.
+      # 토큰 없으면 워커가 exit 0(restart: on-failure → 정지 유지). 브리지 사용 시 두 값 설정 필수.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      BRIDGE_INTERNAL_SECRET: ${BRIDGE_INTERNAL_SECRET:-}
+      PLATFORM_URL: http://web:3000
+    depends_on:
+      - web
 
 volumes:
   opencanal_pgdata_prod:
