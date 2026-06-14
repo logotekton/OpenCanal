@@ -42,5 +42,5 @@ export async function GET(req: Request, { params }: { params: Promise<{ roomId: 
     }),
   ]);
 
-  return NextResponse.json({ messages, instructions, myAgentId: myParticipant.agentId });
+  return NextResponse.json({ messages, instructions, myAgentId: myParticipant.agentId, intentId: room.intentId });
 }

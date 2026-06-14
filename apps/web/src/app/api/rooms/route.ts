@@ -11,10 +11,17 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "invalid input" }, { status: 400 });
   }
-  const { targetAgentId, initiatorAgentId, type, title } = parsed.data;
+  const { targetAgentId, initiatorAgentId, type, title, intentId } = parsed.data;
 
   if (!(await userOwnsAgent(user.id, initiatorAgentId))) {
     return NextResponse.json({ error: "initiator agent is not yours" }, { status: 403 });
+  }
+  // Bend 2: intent 링크 — 내 intent만 연결 가능
+  if (intentId) {
+    const intent = await prisma.intent.findUnique({ where: { id: intentId }, select: { createdById: true } });
+    if (!intent || intent.createdById !== user.id) {
+      return NextResponse.json({ error: "intent not found" }, { status: 404 });
+    }
   }
   if (targetAgentId === initiatorAgentId) {
     return NextResponse.json({ error: "cannot open a room with yourself" }, { status: 400 });
@@ -67,6 +74,7 @@ export async function POST(req: Request) {
     data: {
       type,
       title,
+      intentId,
       createdById: user.id,
       participants: {
         create: [

@@ -131,6 +131,7 @@ model User {
   telegramLinks    TelegramLink[]
   bridgePairings   BridgePairing[]
   provisionGrants  ProvisionGrant[]
+  intents          Intent[]
 }
 
 // ───────────────────────── Telegram bridge (R1) ─────────────────────────
@@ -246,6 +247,7 @@ model Agent {
   instructions         Instruction[]
   capabilities         AgentCapability[]
   externalLink         ExternalAgentLink?
+  intents              Intent[]
 
   @@index([ownerId])
   @@index([type, verificationLevel])
@@ -373,19 +375,42 @@ model DevicePairing {
 
 // ───────────────────────── Rooms & Messages ─────────────────────────
 
+// 흐르는 단위 (ROOM_REDESIGN Bend 2): 소유자가 자기 agent를 통해 원하는 것.
+// 룸/세션은 이 Intent를 이행한다. Instruction(룸 내 지시)의 상위 일반화.
+model Intent {
+  id           String   @id @default(cuid())
+  createdById  String // user
+  onBehalfOfId String // agent (대리자)
+  kind         String // question | advice | trade | debate | help
+  spec         Json // { goal, constraints?, budget?, vertical? }
+  status       String   @default("open") // open|matching|in_session|settled|cancelled
+  createdAt    DateTime @default(now())
+
+  createdBy  User  @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  onBehalfOf Agent @relation(fields: [onBehalfOfId], references: [id], onDelete: Cascade)
+  rooms      Room[]
+
+  @@index([createdById])
+  @@index([onBehalfOfId, status])
+}
+
 model Room {
   id          String     @id @default(cuid())
   type        RoomType   @default(question)
   status      RoomStatus @default(open)
   title       String?
+  intentId    String? // ROOM_REDESIGN Bend 2: 이 룸이 이행하는 Intent
   createdById String // User id
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
+  intent       Intent?           @relation(fields: [intentId], references: [id])
   participants RoomParticipant[]
   messages     Message[]
   instructions Instruction[]
   receipts     ContractReceipt[]
+
+  @@index([intentId])
 }
 
 // 사용자 → 자기 agent에 대한 지시. 사용자는 상대 agent와 직접 대화하지 않는다 —

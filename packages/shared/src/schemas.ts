@@ -72,6 +72,16 @@ export const createRoomSchema = z.object({
   targetAgentId: z.string().min(1),
   initiatorAgentId: z.string().min(1),
   title: z.string().max(120).optional(),
+  intentId: z.string().optional(), // ROOM_REDESIGN Bend 2: 이 룸이 이행하는 Intent
+});
+
+// ── Intent (ROOM_REDESIGN Bend 2) ──
+export const intentKindSchema = z.enum(["question", "advice", "trade", "debate", "help"]);
+export type IntentKind = z.infer<typeof intentKindSchema>;
+export const createIntentSchema = z.object({
+  onBehalfOfId: z.string().min(1), // 대리할 내 agent
+  kind: intentKindSchema.default("question"),
+  spec: z.record(z.any()).default({}), // { goal, constraints?, budget?, vertical? }
 });
 
 export const postMessageSchema = z.object({

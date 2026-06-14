@@ -672,6 +672,30 @@ if (myMsg) {
   ok("자기 메시지 답장 차단 400", selfReply.status === 400);
 }
 
+// ── 12c. Intent (ROOM_REDESIGN Bend 2) ──
+console.log("12c. Intent (Bend 2)");
+const intent = await alice.json(
+  "/api/intents",
+  post({ onBehalfOfId: aliceAgent.id, kind: "question", spec: { goal: "테스트 의도" } })
+);
+ok("intent 생성", !!intent.intent?.id);
+const intentList = await alice.json("/api/intents");
+ok("intent 목록 조회", intentList.intents.some((i) => i.id === intent.intent.id));
+const badIntent = await alice.fetch("/api/intents", post({ onBehalfOfId: founderAgent.id, kind: "question", spec: {} }));
+ok("비소유 agent intent 403", badIntent.status === 403);
+const intentRoom = await alice.json(
+  "/api/rooms",
+  post({ targetAgentId: founderAgent.id, initiatorAgentId: aliceAgent.id, type: "help", intentId: intent.intent.id })
+);
+ok("intent 링크 룸 생성", !!intentRoom.roomId);
+const intentRoomView = await alice.json(`/api/rooms/${intentRoom.roomId}/messages`);
+ok("룸이 intent에 링크됨", intentRoomView.intentId === intent.intent.id);
+const badLink = await alice.fetch(
+  "/api/rooms",
+  post({ targetAgentId: founderAgent.id, initiatorAgentId: aliceAgent.id, type: "question", intentId: "nope" })
+);
+ok("잘못된 intentId 404", badLink.status === 404);
+
 // ── 13. 알림 ──
 console.log("13. 알림");
 const aliceNotifs = await alice.json("/api/notifications");
