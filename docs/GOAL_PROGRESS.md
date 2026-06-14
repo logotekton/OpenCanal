@@ -13,8 +13,8 @@
 > 작업 디렉토리: C:\Logotekton\OpenCanal. 서버: web :3000, gateway :8787, postgres :5433(docker).
 > git: main 단일 흐름 + review-head(PR #1, 빈 base 8b8917e에 re-parent). 커밋 메시지는 `git commit -F <file>`로(헤어 here-string 금지).
 
-## 아키텍처 재정초 — docs/ROOM_REDESIGN.md (Bend 1~4 구현 완료)
-"Room 기반"을 1원리 검토 → **B+(재정초)**: 봉투(신뢰·책임·증거) 유지, 룸-채팅을 뷰로 강등, 1차 단위 = **Intent → Session → Receipt** 프로토콜-퍼스트. **구현 완료**: Bend 1(타입드 Interaction) · Bend 2(Intent+Room.intentId) · Bend 3(N자 fanout/RFQ + 브로드캐스트) · Bend 4(/api/sessions 1급 리소스 + presence=가용성힌트 명시; Room→Session 테이블 리네임은 churn으로 보류). 다음: 카파시/AI철학 팩으로 구조 재검토.
+## 아키텍처 재정초 — docs/ROOM_REDESIGN.md (Bend 1~5 구현 완료)
+"Room 기반"을 1원리 검토 → **B+(재정초)**: 봉투(신뢰·책임·증거) 유지, 룸-채팅을 뷰로 강등, 1차 단위 = **Intent → Session → Receipt** 프로토콜-퍼스트. **구현 완료**: Bend 1(타입드 Interaction) · Bend 2(Intent+Room.intentId) · Bend 3(N자 fanout/RFQ + 브로드캐스트) · Bend 4(/api/sessions 1급 리소스 + presence=가용성힌트; Room→Session 테이블 리네임 보류) · **Bend 5(rigor 강제 — rigorGate가 consequential 행위에 근거+책임 강제, 누락 시 policyLever=reconfirm 보류; 카파시/PFA 재검토에서 도출)**. 후속(미착수): Receipt 세션 kind 일반화, Intent.spec 구조화, policyLever escalate 라우팅.
 
 ## 외부 agent 연결성 (Connect) — docs/CONNECT_PLAN.md
 "정체성 먼저, 3원칙 강제" (창업자 확정). **Phase 1 완료**: AgentOrigin(native/persona_linked/imported_runtime) + governanceScope 파생 + ProvisionGrant/ExternalAgentLink + /api/connect/{grant,provision}(opencrab만 활성, 외부 두뇌 게이트, L2+/배지 금지, 멱등) + /connect UI + 프로필/디렉토리 출처 칩·통치 라벨. smoke 9f(9건). **다음(Phase 2)**: OpenClaw/Hermes 어댑터(@opencanal/adapter-*, imported_runtime, 토큰 필요).
@@ -23,7 +23,7 @@
 AGI 시대 개인 agent가 개인을 대신한다 → 검증된 agent 플랫폼. 경쟁(Moltbot/OpenClaw/Hermes)과 런타임으로 경쟁하지 않고, 그들이 OpenCanal 검증 노드가 되게 한다(R2 어댑터). 상세: docs/ROADMAP.md, 메모리 strategy-positioning.
 
 ## 베이스라인 (완료)
-MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(107) + apps/gateway/scripts/smoke2.mjs(10) + node-sdk integration(5). 검증 루틴: `next build` + tsc(gateway/runner/node-sdk/shared) + tsup + 두 smoke + integration(`pnpm --filter @opencanal/node-sdk exec tsx scripts/integration.ts`). 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d. 주의: tsx watch(gateway dev)가 @prisma/client DLL을 잡으면 `prisma generate`가 EPERM — 게이트웨이 종료 후 generate.
+MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(111) + apps/gateway/scripts/smoke2.mjs(10) + node-sdk integration(5). 검증 루틴: `next build` + tsc(gateway/runner/node-sdk/shared) + tsup + 두 smoke + integration(`pnpm --filter @opencanal/node-sdk exec tsx scripts/integration.ts`). 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d. 주의: tsx watch(gateway dev)가 @prisma/client DLL을 잡으면 `prisma generate`가 EPERM — 게이트웨이 종료 후 generate.
 
 ## 체크리스트
 

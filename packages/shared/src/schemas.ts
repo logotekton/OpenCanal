@@ -165,17 +165,63 @@ export const interactionTypeSchema = z.enum([
 ]);
 export type InteractionType = z.infer<typeof interactionTypeSchema>;
 
+// ── PolicyLever + PFA payload (ROOM_REDESIGN Bend 5, Philosophy for AI 제작기 03) ──
+// PolicyLever: agent 행동을 통제하는 정책 레버(approval의 일반화). 서버가 rigor 평가로 설정.
+export const policyLeverSchema = z.enum(["none", "warn", "reconfirm", "human_approval", "escalate", "block"]);
+export type PolicyLever = z.infer<typeof policyLeverSchema>;
+
+// 사실/해석/행동 분리 + 근거/반론/책임 — agent 발화의 구조화 하위필드(미지정 키는 strip).
+export const interactionPayloadSchema = z.object({
+  originalClaim: z.string().max(2000).optional(),
+  interpretationClaim: z.string().max(2000).optional(),
+  aiApplicationClaim: z.string().max(2000).optional(),
+  evidence: z.array(z.string().max(1000)).max(20).optional(),
+  counterargument: z.string().max(2000).optional(),
+  responsibility: z.string().max(1000).optional(),
+  policyLever: policyLeverSchema.optional(),
+});
+export type InteractionPayload = z.infer<typeof interactionPayloadSchema>;
+
 // ── Brain output contract ──
 export const brainOutputSchema = z.object({
   // Bend 1: 발화의 행위 종류. 두뇌가 안 주면 statement로 안전 기본.
   type: interactionTypeSchema.default("statement"),
   content: z.string(),
   claims: z.array(claimSchema).optional(),
-  // 구조화 페이로드(offer terms, 책임/근거 등) — 사람용 content와 별개의 기계용 표현(JSON 패스스루).
-  payload: z.record(z.any()).optional(),
+  // Bend 5: PFA 구조화 페이로드(근거/책임/반론 등) — 사람용 content와 별개.
+  payload: interactionPayloadSchema.optional(),
   needs_approval: z.boolean().default(false),
 });
 export type BrainOutput = z.infer<typeof brainOutputSchema>;
+
+// consequential(귀결 있는) 행위 — 근거·책임 강제 대상.
+export const CONSEQUENTIAL_INTERACTIONS: InteractionType[] = [
+  "proposal",
+  "offer",
+  "counteroffer",
+  "mandate",
+  "decision",
+];
+
+/**
+ * Bend 5 — "Claim before action / 근거 없는 주장 금지"의 런타임 게이트.
+ * consequential 행위가 근거(evidence)·책임(responsibility)을 못 갖추면 통과시키지 않고
+ * reconfirm으로 보류한다. (과강제 방지: 일반 statement는 면제.)
+ */
+export function rigorGate(
+  type: InteractionType,
+  payload: InteractionPayload | undefined,
+  claims: Claim[] | undefined
+): { hold: boolean; policyLever: PolicyLever; reason?: string } {
+  if (!CONSEQUENTIAL_INTERACTIONS.includes(type)) return { hold: false, policyLever: "none" };
+  const hasEvidence = (payload?.evidence?.length ?? 0) > 0 || (claims ?? []).some((c) => c.type === "evidence");
+  const hasResponsibility = !!payload?.responsibility || (claims ?? []).some((c) => c.type === "responsibility");
+  if (!hasEvidence || !hasResponsibility) {
+    const missing = [!hasEvidence && "evidence", !hasResponsibility && "responsibility"].filter(Boolean).join("+");
+    return { hold: true, policyLever: "reconfirm", reason: `consequential ${type}: ${missing} 누락 (Claim before action)` };
+  }
+  return { hold: false, policyLever: "none" };
+}
 
 /**
  * Parse a brain's raw text into the {content, claims?, needs_approval} contract.

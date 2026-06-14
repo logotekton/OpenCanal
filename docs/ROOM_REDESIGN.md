@@ -127,7 +127,14 @@ model Interaction {
 - **Bend 3 ✅** /api/intents/[id]/fanout(N자 RFQ 룸), 전달/승인 메시지 전참여자 브로드캐스트. (스키마 변경 없음 — RoomParticipant 이미 N자. observer/expert role은 후속.)
 - **Bend 4 ✅(substance)** /api/sessions/[id] 1급 Session 리소스(intent+참여자role+타입드 interaction+result 합성). presence는 이미 게이트가 아니라 가용성 힌트임을 확인(오프라인=inbox 큐) — UI 카피로 명시.
   - **보류(판단)**: Room→Session **테이블 리네임**은 churn 대비 가치 낮아 보류. Session *의미*는 리소스로 확보됨. 필요 시 후속 코스메틱.
-- 검증: smoke 107 + smoke2 10 + node-sdk integration 5.
+- **Bend 5 ✅ (rigor 강제 — 카파시/Philosophy-for-AI 재검토에서 도출)** "형식→force":
+  payload를 타입드 PFA 객체(originalClaim/interpretation/evidence/counterargument/responsibility/policyLever)로,
+  `rigorGate`가 consequential 행위(offer/counteroffer/mandate/decision/proposal)에 **근거+책임을 강제** —
+  누락 시 통과 없이 `policyLever=reconfirm`으로 보류(거래룸 아니어도). statement는 면제(과강제 방지).
+  근거: PFA "품질은 구조의 엄격함에서"·"Claim before action", 카파시 jagged/ghost intelligence.
+  - 후속(미착수): Receipt 세션 kind 일반화(debate/advice Evidence Receipt), Intent.spec 구조화(context engineering),
+    interpretation/aiApplication 체인 강제, policyLever escalate/expert 라우팅.
+- 검증: smoke 111 + smoke2 10 + node-sdk integration 5.
 
 ## 6. 리스크 / 열린 질문
 - **레일-퍼스트 콜드스타트**: 프로토콜은 생태계 필요 → *룸 데모를 콜드스타트 wedge로, 코어는 세션/API로* 이중 전략.

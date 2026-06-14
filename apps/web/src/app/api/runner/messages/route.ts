@@ -3,7 +3,7 @@ import { prisma } from "@opencanal/db";
 import { authenticateRunner } from "@/lib/runner-auth";
 import { notifyGateway } from "@/lib/gateway";
 import { notifyUser } from "@/lib/notify";
-import { brainOutputSchema } from "@opencanal/shared";
+import { brainOutputSchema, rigorGate } from "@opencanal/shared";
 import { z } from "zod";
 
 const replySchema = z
@@ -70,7 +70,9 @@ export async function POST(req: Request) {
   }
 
   const room = participant.room;
-  const requiresApproval = needsApproval || room.type === "trade";
+  // Bend 5: rigor 게이트 — consequential 행위가 근거·책임 없으면 reconfirm으로 보류(서버 권위).
+  const rigor = rigorGate(interactionType, payload, claims);
+  const requiresApproval = needsApproval || room.type === "trade" || rigor.hold;
 
   // F2/F3: 메시지 생성 + 지시/답장 claim을 한 트랜잭션에서 원자적으로.
   // updateMany({where:{status:"pending"}})로 단 한 번만 성공하도록 보장 — 동시 유입(WS push +
@@ -101,11 +103,17 @@ export async function POST(req: Request) {
           interactionType,
           claims: claims ?? undefined,
           payload: payload ?? undefined,
+          policyLever: rigor.policyLever,
           inReplyToId,
           status: "pending",
           approval: requiresApproval ? "required" : "none",
           approvalRequest: requiresApproval
-            ? { create: { agentId: device.agentId, summary: content.slice(0, 200) } }
+            ? {
+                create: {
+                  agentId: device.agentId,
+                  summary: (rigor.hold ? `[${rigor.reason}] ` : "") + content.slice(0, 180),
+                },
+              }
             : undefined,
         },
         select: { id: true },

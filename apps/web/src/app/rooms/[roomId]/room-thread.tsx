@@ -13,6 +13,7 @@ interface ThreadMessage {
   status: string;
   approval: string;
   interactionType: string;
+  policyLever: string;
   claims: { type: string; text: string }[] | null;
   createdAt: string;
   sender: { handle: string; displayName: string; ownerId: string };
@@ -215,6 +216,11 @@ export function RoomThread({
                     {m.interactionType && m.interactionType !== "statement" && (
                       <span className="ml-2 rounded border border-hairline px-1.5 py-0.5 text-[10px] text-sunset-soft">
                         {m.interactionType}
+                      </span>
+                    )}
+                    {m.policyLever && m.policyLever !== "none" && (
+                      <span className="ml-1 rounded border border-sunset px-1.5 py-0.5 text-[10px] text-sunset">
+                        {m.policyLever}
                       </span>
                     )}
                   </p>

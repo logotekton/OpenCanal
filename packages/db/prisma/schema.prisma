@@ -456,8 +456,10 @@ model Message {
   interactionType String      @default("statement")
   // v1 Philosophy-for-AI 최소형: [{type: claim|evidence|interpretation|responsibility, text}]
   claims        Json?
-  // 구조화 페이로드(offer terms, 책임/근거 등) — 사람용 content와 별개
+  // 구조화 페이로드(PFA: originalClaim/evidence/counterargument/responsibility 등) — 사람용 content와 별개
   payload       Json?
+  // 정책 레버 (ROOM_REDESIGN Bend 5, PFA PolicyLever): 서버가 rigor 평가로 설정. none|warn|reconfirm|human_approval|escalate|block
+  policyLever   String      @default("none")
   status        MessageStatus @default(pending)
   approval      ApprovalState @default(none)
   inReplyToId   String?

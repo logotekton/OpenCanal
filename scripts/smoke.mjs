@@ -736,6 +736,51 @@ ok("Session 리소스: 타입드 interaction 합성", sessionView.session.intera
 const sessForbidden = await carol.fetch(`/api/sessions/${tradeRoom.roomId}`); // carol는 tradeRoom 비참여
 ok("Session 비참여자 403", sessForbidden.status === 403);
 
+// ── 12f. Rigor 강제 (ROOM_REDESIGN Bend 5) ──
+console.log("12f. Rigor 강제 (Bend 5)");
+const rigorRoom = await alice.json(
+  "/api/rooms",
+  post({ targetAgentId: founderAgent.id, initiatorAgentId: aliceAgent.id, type: "discussion" })
+);
+// 근거 없는 consequential(proposal) → 거래룸이 아니어도 rigor가 reconfirm으로 보류
+const rgI1 = await alice.json(`/api/rooms/${rigorRoom.roomId}/instructions`, post({ content: "제안A" }));
+const rgP1 = (await aliceRunner.inbox()).instructions.find((i) => i.instructionId === rgI1.instructionId);
+const rgHeld = await aliceRunner.reply({
+  roomId: rigorRoom.roomId,
+  instructionId: rgP1.instructionId,
+  content: "5만원에 하겠습니다",
+  interactionType: "proposal",
+  needsApproval: false,
+});
+ok("근거 없는 consequential은 rigor로 보류", rgHeld.requiresApproval === true);
+// 근거+책임 갖춘 consequential → 통과
+const rgI2 = await alice.json(`/api/rooms/${rigorRoom.roomId}/instructions`, post({ content: "제안B" }));
+const rgP2 = (await aliceRunner.inbox()).instructions.find((i) => i.instructionId === rgI2.instructionId);
+const rgPass = await aliceRunner.reply({
+  roomId: rigorRoom.roomId,
+  instructionId: rgP2.instructionId,
+  content: "6만원에 하겠습니다",
+  interactionType: "proposal",
+  payload: { evidence: ["시세 자료"], responsibility: "alice가 최종 확인" },
+  needsApproval: false,
+});
+ok("근거+책임 갖춘 consequential은 통과", rgPass.requiresApproval === false);
+// 일반 statement는 rigor 면제
+const rgI3 = await alice.json(`/api/rooms/${rigorRoom.roomId}/instructions`, post({ content: "인사" }));
+const rgP3 = (await aliceRunner.inbox()).instructions.find((i) => i.instructionId === rgI3.instructionId);
+const rgStmt = await aliceRunner.reply({
+  roomId: rigorRoom.roomId,
+  instructionId: rgP3.instructionId,
+  content: "안녕하세요",
+  needsApproval: false,
+});
+ok("일반 statement는 rigor 면제", rgStmt.requiresApproval === false);
+const rigorSession = await alice.json(`/api/sessions/${rigorRoom.roomId}`);
+ok(
+  "보류 interaction policyLever=reconfirm",
+  rigorSession.session.interactions.some((i) => i.type === "proposal" && i.policyLever === "reconfirm")
+);
+
 // ── 13. 알림 ──
 console.log("13. 알림");
 const aliceNotifs = await alice.json("/api/notifications");
