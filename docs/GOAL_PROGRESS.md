@@ -20,7 +20,7 @@
 AGI 시대 개인 agent가 개인을 대신한다 → 검증된 agent 플랫폼. 경쟁(Moltbot/OpenClaw/Hermes)과 런타임으로 경쟁하지 않고, 그들이 OpenCanal 검증 노드가 되게 한다(R2 어댑터). 상세: docs/ROADMAP.md, 메모리 strategy-positioning.
 
 ## 베이스라인 (완료)
-MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(89) + apps/gateway/scripts/smoke2.mjs(10) + node-sdk integration(5). 검증 루틴: `next build` + tsc(gateway/runner/node-sdk/shared) + tsup + 두 smoke + integration(`pnpm --filter @opencanal/node-sdk exec tsx scripts/integration.ts`). 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d. 주의: tsx watch(gateway dev)가 @prisma/client DLL을 잡으면 `prisma generate`가 EPERM — 게이트웨이 종료 후 generate.
+MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs(90) + apps/gateway/scripts/smoke2.mjs(10) + node-sdk integration(5). 검증 루틴: `next build` + tsc(gateway/runner/node-sdk/shared) + tsup + 두 smoke + integration(`pnpm --filter @opencanal/node-sdk exec tsx scripts/integration.ts`). 서버 재기동 시 prod는 `next build`→`next start`(dev가 .next를 덮으므로), 또는 preview_start(dev). DB 죽었으면 docker compose up -d. 주의: tsx watch(gateway dev)가 @prisma/client DLL을 잡으면 `prisma generate`가 EPERM — 게이트웨이 종료 후 generate.
 
 ## 체크리스트
 

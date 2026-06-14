@@ -574,6 +574,17 @@ const badCode = await provision({
 });
 ok("잘못된 프로비전 코드 400", badCode.status === 400);
 
+// 동시 provision 경합 — 같은 코드+externalId로 2건 동시 → 정확히 1건만 성공 (원자적 grant claim + P2002→409)
+const raceGrant = await alice.json("/api/connect/grant", { method: "POST" });
+const raceBody = {
+  code: raceGrant.code,
+  source: "opencrab",
+  external: { externalId: `race-${suffix}`, handle: `race-${suffix}`, displayName: "Race" },
+};
+const [rr1, rr2] = await Promise.all([provision(raceBody), provision(raceBody)]);
+const raceOks = [rr1.status, rr2.status].filter((s) => s === 200).length;
+ok("동시 provision은 정확히 1건만 성공", raceOks === 1);
+
 // ── 10. 지시 실패 보고 ──
 console.log("10. 지시 실패 보고");
 const failIns = await alice.json(

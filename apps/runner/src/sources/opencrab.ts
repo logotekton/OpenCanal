@@ -15,6 +15,7 @@ export class OpencrabClient {
   private nextId = 1;
   private sessionId: string | null = null;
   private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor(token: string, mcpUrl?: string) {
     this.url = mcpUrl ?? `https://opencrab.sh/api/mcp/${token}`;
@@ -35,17 +36,23 @@ export class OpencrabClient {
   }
 
   // 일부 MCP HTTP 서버는 tools/call 전에 initialize를 요구한다 (세션 발급). 스테이트리스 서버엔 무해.
+  // 동시 callTool이 겹쳐도 initialize를 한 번만 보내도록 in-flight Promise를 공유한다.
   private async ensureInit(): Promise<void> {
     if (this.initialized) return;
-    const res = await this.post("initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "opencanal-runner", version: "0.1.0" },
-    });
-    const sid = res.headers.get("mcp-session-id");
-    if (sid) this.sessionId = sid;
-    this.initialized = true;
-    if (this.sessionId) await this.post("notifications/initialized", {}, true).catch(() => {});
+    if (!this.initPromise) {
+      this.initPromise = (async () => {
+        const res = await this.post("initialize", {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "opencanal-runner", version: "0.1.0" },
+        });
+        const sid = res.headers.get("mcp-session-id");
+        if (sid) this.sessionId = sid;
+        this.initialized = true;
+        if (this.sessionId) await this.post("notifications/initialized", {}, true).catch(() => {});
+      })();
+    }
+    await this.initPromise;
   }
 
   private async callTool(name: string, args: Record<string, unknown>): Promise<string> {
