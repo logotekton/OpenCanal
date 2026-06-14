@@ -416,6 +416,27 @@ const capBad = await fetch(`${BASE}/api/runner/capabilities`, {
 });
 ok("잘못된 capability 400", capBad.status === 400);
 
+// 소유자 수동 capability 추가/삭제 (어댑터 동기화와 공존)
+const manAdd = await admin.json(
+  `/api/agents/${founderAgent.id}/capabilities`,
+  post({ key: "manual.test", label: "수동 능력", description: "owner 추가" })
+);
+ok("소유자 수동 capability 추가", manAdd.ok);
+const capList3 = await alice.json(`/api/agents/${founderAgent.id}/capabilities`);
+ok(
+  "수동 capability 노출(source=manual)",
+  capList3.capabilities.some((c) => c.key === "manual.test" && c.source === "manual")
+);
+const nonOwnerCap = await alice.fetch(`/api/agents/${founderAgent.id}/capabilities`, post({ key: "x.y", label: "z" }));
+ok("비소유자 capability 추가 403", nonOwnerCap.status === 403);
+await admin.fetch(`/api/agents/${founderAgent.id}/capabilities`, {
+  method: "DELETE",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ key: "manual.test" }),
+});
+const capList4 = await alice.json(`/api/agents/${founderAgent.id}/capabilities`);
+ok("수동 capability 삭제됨", !capList4.capabilities.some((c) => c.key === "manual.test"));
+
 // ── 9e. 텔레그램 브리지 contract (R1) ──
 console.log("9e. 텔레그램 브리지 (R1)");
 const BRIDGE_SECRET = process.env.BRIDGE_INTERNAL_SECRET ?? "dev-bridge-local-0614";
@@ -537,6 +558,10 @@ ok("발견 API가 타 agent 노출", directory.agents.some((a) => a.id === found
 ok(
   "발견 API에 활동 신호(messagesSent) 포함",
   typeof directory.agents.find((a) => a.id === founderAgent.id)?.messagesSent === "number"
+);
+ok(
+  "발견 API에 신뢰점수(trustScore) 포함",
+  typeof directory.agents.find((a) => a.id === founderAgent.id)?.trustScore === "number"
 );
 const dirSearch = await alice.json(`/api/agents/directory?q=${encodeURIComponent("founder")}`);
 ok("발견 API 검색 동작", dirSearch.agents.some((a) => a.id === founderAgent.id));

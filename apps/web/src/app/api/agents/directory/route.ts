@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@opencanal/db";
 import { apiUser } from "@/lib/session";
+import { getReputationsBatch } from "@/lib/reputation";
 
 // F9: agent 발견(discovery) — 룸을 열려면 상대 agent의 id가 필요한데
 // GET /api/agents는 본인 것만 반환했다. 공개 디렉토리로 그 갭을 메운다.
@@ -41,18 +42,19 @@ export async function GET(req: Request) {
     },
   });
 
-  // 발견 단계 신뢰 힌트 — "실제로 활동하는 agent인가". 단일 groupBy로 N+1 없이.
+  // 발견 단계 신뢰 힌트 — 실행 기반 신뢰점수 + 확정 거래 + 활동. 배치 집계라 N+1 없음.
   const ids = agents.map((a) => a.id);
-  const sentGroups = ids.length
-    ? await prisma.message.groupBy({
-        by: ["senderAgentId"],
-        where: { senderAgentId: { in: ids }, authorKind: "agent" },
-        _count: true,
-      })
-    : [];
-  const sentMap = new Map(sentGroups.map((g) => [g.senderAgentId, g._count]));
+  const reps = await getReputationsBatch(ids);
 
   return NextResponse.json({
-    agents: agents.map((a) => ({ ...a, messagesSent: sentMap.get(a.id) ?? 0 })),
+    agents: agents.map((a) => {
+      const rep = reps.get(a.id);
+      return {
+        ...a,
+        messagesSent: rep?.messagesSent ?? 0,
+        trustScore: rep?.trustScore ?? null,
+        transactionCount: rep?.transactionCount ?? 0,
+      };
+    }),
   });
 }

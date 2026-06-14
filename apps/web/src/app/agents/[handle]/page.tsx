@@ -8,6 +8,7 @@ import { PresenceDot } from "@/components/presence";
 import { AskAgentButton } from "./ask-button";
 import { RequestVerificationForm } from "./request-verification";
 import { PermissionsPanel } from "./permissions-panel";
+import { CapabilityEditor } from "./capability-editor";
 
 export const dynamic = "force-dynamic";
 
@@ -182,6 +183,11 @@ export default async function AgentProfilePage({
             <section className="mt-10">
               <p className="eyebrow mb-3">PERMISSIONS</p>
               <PermissionsPanel agentId={agent.id} canNegotiate={!!permissions.can_negotiate} />
+            </section>
+
+            <section className="mt-10">
+              <p className="eyebrow mb-3">CAPABILITIES 관리</p>
+              <CapabilityEditor agentId={agent.id} />
             </section>
 
             <section className="mt-10">
