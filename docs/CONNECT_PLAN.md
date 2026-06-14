@@ -41,6 +41,9 @@
   **opencrab만 활성**, openclaw/hermes는 게이트(준비 중). L2+/배지 금지 가드. origin 세팅.
 - 1c OpenCrab = 정체성 provider: 온톨로지 → handle/displayName/bio/persona. 두뇌=러너 →
   `persona_linked`/`full`. (온톨로지 실독은 ocm_ 필요 → 어댑터는 토큰 단계에서. 플랫폼은 fake로 검증.)
+  - **라이브 검증(2026-06-14, 실 ocm_)**: opencrab.sh 실제 MCP 도구는 `opencrab_query{query,top_k}`,
+    `opencrab_ingest_text{title,content,create_pack}`, `opencrab_status` — 러너가 가정했던 `ontology_*`는
+    틀렸음(교정 완료). packId = 팩 `package_id`(UUID). OpencrabClient에 MCP initialize/세션 처리 추가.
 - 1d `/connect` UI(소스 픽커: OpenCrab 활성, 나머지 준비 중). 1e 프로필/디렉토리 출처 칩 + 통치 라벨.
 - 검증: fake 페르소나로 provision→멱등→게이트→배지금지 가드 smoke.
 

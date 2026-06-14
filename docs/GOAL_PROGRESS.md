@@ -3,7 +3,7 @@
 > ## ▶ 다음 작업 (콜드 재개 진입점)
 > **로드맵 R0~R5 코드 완수.** 남은 건 외부 시크릿이 필요한 항목 + 선택 후속.
 > 완료: R0(라이브 증명) · R1 디렉토리 · R2(노드 SDK) · R3(평판 v1+영수증 이행/분쟁+ingest 경로) · R4(Commerce Room) · R5(capability 생태계).
-> 잔여 외부의존(코드 완성 — 시크릿만 주입하면 가동): ① R0 OpenCrab 페르소나 실증(ocm_ 토큰) ② R1 텔레그램 브리지(TELEGRAM_BOT_TOKEN — 코드/엔드포인트/워커 완성) ③ R3 ingest 실제 ontology_ingest 도구명/호출 확인(ocm_ 토큰).
+> 잔여 외부의존(코드 완성 — 시크릿만 주입하면 가동): ① R0 OpenCrab 페르소나 실증(ocm_ — 도구 검증 완료, persona-rich 팩 필요) ② R1 텔레그램 브리지(TELEGRAM_BOT_TOKEN — 코드/엔드포인트/워커 완성). ③ ✅ R3 ingest 실토큰 검증 완료(opencrab_ingest_text). ④ Connect Phase 2(OpenClaw/Hermes 자격증명).
 > 선택 후속: [x] capability 소유자 수동 편집 UI · [x] 평판 trustScore 디렉토리 노출(배치 집계 getReputationsBatch) · [x] 러너를 node-sdk 위로 재구현(중복 프로토콜 제거 — 큐/limits를 SDK로 이식, 라이브 WS 연결 검증). 잔여: 없음(코드). 토큰 필요 항목만 남음.
 > 재개 순서: ① 이 파일 + docs/ROADMAP.md 읽기 ② `docker compose up -d` (DB) ③ web(next build→start)/gateway 기동 ④ 잔여/후속 착수 ⑤ 단계별 커밋(main + review-head re-parent on 8b8917e) + smoke(80+10)+integration(5)로 검증.
 > git: main 로컬 커밋 완료(R3 6a8f8e1·R4 bcdc548·R5). **푸시 보류** — origin push는 사용자 명시 승인 필요(분류기가 차단). 커밋 메시지는 반드시 `git commit -F <file>` (bash에서 `@'...'@` 금지).
@@ -50,7 +50,7 @@ MVP 배포가능 + 11개 에이전트 테스트 통과. smoke: scripts/smoke.mjs
 - [x] 영수증 생애주기 — ReceiptStatus(confirmed/fulfilled/disputed) + /api/receipts/[id] POST(fulfill|dispute, 당사자만, disputed 종착) — 이행률/분쟁률의 데이터 원천
 - [x] 프로필 신뢰 신호 강화 — 프로필 TRACK RECORD에 v1 지표+신뢰점수, 디렉토리에 활동(messagesSent) 힌트, receipt 페이지 상태 chip+이행/분쟁 버튼
 - [x] 검증: 스모크에 평판/이행/분쟁/러너receipts 케이스 (smoke 41→53)
-- [~] 잔여: 실제 ontology_ingest 호출은 ocm_ 토큰 필요(경로·no-op만 검증). 도구명 ontology_ingest 가정 — 실토큰으로 검증 시 확정
+- [x] 실토큰(ocm_) 라이브 검증 완료 — **실제 도구명은 `opencrab_query`/`opencrab_ingest_text`/`opencrab_status`** (가정했던 `ontology_*`는 틀림, "Unknown tool"). OpencrabClient 교정 + MCP initialize/세션 처리 추가. ingestReceipt 라이브 성공(`opencrab_ingest_text {title,content,create_pack:false}`), personaContext는 `opencrab_query {query,top_k}` (대형 테넌트에선 서버 statement timeout → graceful 폴백)
 
 ### R4 — 말→성사 (Commerce Room) ✅
 - [x] BotContract 이행 단계 — ContractReceipt.conditions(조건표 [{label,value,met}]) + /api/receipts/[id] fulfill이 met 기록, confirm 시 조건표 동봉(rooms/[id]/receipts)
