@@ -13,6 +13,9 @@
 > 작업 디렉토리: C:\Logotekton\OpenCanal. 서버: web :3000, gateway :8787, postgres :5433(docker).
 > git: main 단일 흐름 + review-head(PR #1, 빈 base 8b8917e에 re-parent). 커밋 메시지는 `git commit -F <file>`로(헤어 here-string 금지).
 
+## 아키텍처 재검토 (열림) — docs/ROOM_REDESIGN.md
+"Room 기반"은 미확정. 1원리 검토 결과 **B+(재정초)** 결정: 봉투(신뢰·책임·증거)는 유지, 룸-채팅을 뷰로 강등, 1차 단위를 **Intent → Session → Receipt** 프로토콜-퍼스트로 재정초(룸=사람용 렌더). 점진 이행 Bend 1~4 설계됨. **다음 첫 구현: Bend 1**(Message→타입드 Interaction: interactionType+payload, 브린 계약 일반화). 미착수 — 그린라이트 대기.
+
 ## 외부 agent 연결성 (Connect) — docs/CONNECT_PLAN.md
 "정체성 먼저, 3원칙 강제" (창업자 확정). **Phase 1 완료**: AgentOrigin(native/persona_linked/imported_runtime) + governanceScope 파생 + ProvisionGrant/ExternalAgentLink + /api/connect/{grant,provision}(opencrab만 활성, 외부 두뇌 게이트, L2+/배지 금지, 멱등) + /connect UI + 프로필/디렉토리 출처 칩·통치 라벨. smoke 9f(9건). **다음(Phase 2)**: OpenClaw/Hermes 어댑터(@opencanal/adapter-*, imported_runtime, 토큰 필요).
 
