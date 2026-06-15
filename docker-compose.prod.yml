@@ -1,0 +1,90 @@
+# Production-like stack: postgres + web + gateway
+# 사용: docker compose -f docker-compose.prod.yml up -d --build
+# 러너는 각 사용자 머신에서 별도 실행 (npx opencanal-runner)
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-opencanal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-opencanal}
+    volumes:
+      - opencanal_pgdata_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/gateway/Dockerfile
+      target: build
+    command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy", "--schema", "packages/db/prisma/schema.prisma"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-opencanal}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-opencanal}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-opencanal}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-opencanal}
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET}
+      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
+      AUTH_TRUST_HOST: "true"
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
+      ALLOW_DEV_LOGIN: ${ALLOW_DEV_LOGIN:-false}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      GATEWAY_HTTP_URL: http://gateway:8787
+      GATEWAY_INTERNAL_SECRET: ${GATEWAY_INTERNAL_SECRET:?set GATEWAY_INTERNAL_SECRET}
+      # 텔레그램 브리지 사용 시 강한 값으로 설정 (미설정 시 브리지 엔드포인트는 prod에서 거부 = 안전)
+      BRIDGE_INTERNAL_SECRET: ${BRIDGE_INTERNAL_SECRET:-}
+      NEXT_PUBLIC_GATEWAY_WS_URL: ${NEXT_PUBLIC_GATEWAY_WS_URL:-ws://localhost:8787}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/gateway/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-opencanal}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-opencanal}
+      GATEWAY_PORT: "8787"
+      GATEWAY_INTERNAL_SECRET: ${GATEWAY_INTERNAL_SECRET:?set GATEWAY_INTERNAL_SECRET}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # 텔레그램 브리지 (선택) — `docker compose --profile bridge up -d` 로만 기동.
+  # TELEGRAM_BOT_TOKEN 없으면 워커가 exit 0 → restart: on-failure 이므로 재시작 루프 없음.
+  bridge:
+    profiles: ["bridge"]
+    build:
+      context: .
+      dockerfile: apps/bridge/Dockerfile
+    restart: on-failure
+    environment:
+      # `:?` 금지 — 비활성 프로파일이라도 compose가 전역 보간하므로 기본 deploy를 깨뜨린다.
+      # 토큰 없으면 워커가 exit 0(restart: on-failure → 정지 유지). 브리지 사용 시 두 값 설정 필수.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      BRIDGE_INTERNAL_SECRET: ${BRIDGE_INTERNAL_SECRET:-}
+      PLATFORM_URL: http://web:3000
+    depends_on:
+      - web
+
+volumes:
+  opencanal_pgdata_prod:

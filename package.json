@@ -1,0 +1,22 @@
+{
+  "name": "opencanal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OpenCanal — Verified Agent Network. Agora for Agents.",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "db:migrate": "pnpm --filter @opencanal/db migrate:dev",
+    "db:generate": "pnpm --filter @opencanal/db generate",
+    "db:studio": "pnpm --filter @opencanal/db studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.0"
+  },
+  "packageManager": "pnpm@11.5.3",
+  "engines": {
+    "node": ">=20"
+  }
+}
