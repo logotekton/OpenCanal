@@ -40,6 +40,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <Link href="/rooms" className="hover:text-ink">
                 Rooms
               </Link>
+              <Link href="/night" className="hover:text-ink">
+                Night
+              </Link>
               {user?.role === "admin" && (
                 <Link href="/admin/verification" className="text-sunset hover:text-sunset-soft">
                   Admin
