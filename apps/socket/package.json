@@ -1,0 +1,31 @@
+{
+  "name": "opencanal-socket",
+  "version": "0.1.0",
+  "description": "The pack's power outlet — a local stdio MCP server that lets any external workflow (n8n, Claude Code, …) read the owner's judgment pack and feed outcomes back.",
+  "type": "module",
+  "bin": {
+    "opencanal-socket": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsup src/index.ts --format esm --clean",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@opencanal/shared": "workspace:*",
+    "@types/node": "^22.0.0",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  },
+  "tsup": {
+    "noExternal": ["@opencanal/shared"]
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
