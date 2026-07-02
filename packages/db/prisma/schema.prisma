@@ -109,6 +109,29 @@ enum AgentOrigin {
   imported_runtime // 외부 두뇌(OpenClaw/Hermes) — 통치 in_network
 }
 
+// ───────── Night loop enums (피벗 v2 — docs/DIRECTION.md) ─────────
+
+enum NightRunStatus {
+  running
+  completed
+  failed
+}
+
+enum NightTaskStatus {
+  queued // 백로그 — 다음 밤 실행이 집어간다
+  running
+  produced // 산출물이 만들어져 리뷰 대기
+  skipped // agent가 판단으로 건너뜀 (일지에 근거)
+  failed
+}
+
+// 아침 리뷰 — 원장의 핵심 상태. rejected의 reason은 러너가 팩으로 재ingest한다.
+enum ReviewState {
+  pending
+  approved
+  rejected
+}
+
 // ───────────────────────── Auth (Auth.js) ─────────────────────────
 
 model User {
@@ -132,6 +155,7 @@ model User {
   bridgePairings   BridgePairing[]
   provisionGrants  ProvisionGrant[]
   intents          Intent[]
+  artifactReviews  NightArtifact[]       @relation("artifactReviewer")
 }
 
 // ───────────────────────── Telegram bridge (R1) ─────────────────────────
@@ -248,6 +272,12 @@ model Agent {
   capabilities         AgentCapability[]
   externalLink         ExternalAgentLink?
   intents              Intent[]
+
+  nightPolicies   NightPolicy[]
+  nightDirectives NightDirective[]
+  nightTasks      NightTask[]
+  nightRuns       NightRun[]
+  nightArtifacts  NightArtifact[]
 
   @@index([ownerId])
   @@index([type, verificationLevel])
@@ -523,4 +553,106 @@ model ContractReceipt {
   acceptedBy User    @relation("receiptAcceptor", fields: [acceptedById], references: [id])
 
   @@index([roomId])
+}
+
+// ───────────────────────── Night loop (피벗 v2 — docs/DIRECTION.md) ─────────────────────────
+// 자율 생산 루프의 원장: Plan(NightTask) → Produce(NightRun/NightArtifact) → Review(리뷰 필드)
+// → 반려 사유는 러너가 팩(OpenCrab)으로 재ingest한다 (플랫폼은 ocm_ 토큰을 절대 갖지 않는다).
+
+// 판단 정책 — 팩의 실행 계약. 소유자가 문장 단위로 편집하고, 러너가 constitution에 주입하며,
+// 일지의 모든 판단이 이 id를 출처로 참조한다 (provenance — 반려 교정이 정확한 정책을 겨냥하게).
+model NightPolicy {
+  id        String   @id @default(cuid())
+  agentId   String
+  kind      String   @default("decision") // decision(판단기준) | red_flag(금지선) | style(나다움) | playbook(요령)
+  text      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, active])
+}
+
+// 상시 지시 — 소유자가 문장으로 주는 방향 ("BIMGraph 문서화가 밀려 있으면 항상 우선").
+// 워크플로우(구조)가 아니라 기준(문장). Plan이 이걸 근거로 작업을 고른다.
+model NightDirective {
+  id        String   @id @default(cuid())
+  agentId   String
+  content   String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, active])
+}
+
+// 작업 카드 — 밤에 할 일의 단위. P0: 소유자가 백로그로 등록. P1: Plan이 스캔으로 자동 발의
+// (originPolicyId/originNote = "왜 이 작업인가"의 판단 근거).
+model NightTask {
+  id             String          @id @default(cuid())
+  agentId        String
+  runId          String? // 이 카드를 집어간 밤 실행
+  title          String
+  brief          String // 무엇을 만들지 (agent에게 주는 브리프)
+  originPolicyId String?
+  originNote     String? // 왜 이 작업인가
+  status         NightTaskStatus @default(queued)
+  order          Int             @default(0)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  agent     Agent           @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  run       NightRun?       @relation(fields: [runId], references: [id])
+  artifacts NightArtifact[]
+
+  @@index([agentId, status, order])
+}
+
+// 밤 실행 — journal(JournalEntry[])이 스펙터클(밤사이 일지)의 원천.
+// 각 엔트리는 판단의 정책 출처(policyId)를 갖는다.
+model NightRun {
+  id         String         @id @default(cuid())
+  agentId    String
+  status     NightRunStatus @default(running)
+  startedAt  DateTime       @default(now())
+  finishedAt DateTime?
+  error      String?
+  journal    Json           @default("[]")
+
+  agent     Agent           @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tasks     NightTask[]
+  artifacts NightArtifact[]
+
+  @@index([agentId, startedAt])
+}
+
+// 산출물 + 아침 리뷰 원장. 반려(rejected)의 reviewReason은 다음 밤 실행이 시작될 때
+// 러너가 OpenCrab 팩으로 재ingest하고 correctionIngestedAt으로 ack한다 — Correct 루프의 배관.
+model NightArtifact {
+  id      String  @id @default(cuid())
+  runId   String
+  taskId  String?
+  agentId String
+  kind    String  @default("markdown") // markdown | text
+  title   String
+  content String
+
+  review               ReviewState @default(pending)
+  reviewReason         String?
+  reviewedById         String?
+  reviewedAt           DateTime?
+  correctionIngestedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  run        NightRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+  task       NightTask? @relation(fields: [taskId], references: [id])
+  agent      Agent      @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  reviewedBy User?      @relation("artifactReviewer", fields: [reviewedById], references: [id])
+
+  @@index([agentId, review])
+  @@index([runId])
 }
