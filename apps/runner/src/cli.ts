@@ -12,6 +12,7 @@ import { ReceiptIngester } from "./ingest";
 import { ClaudeAdapter } from "./brain/claude";
 import { CodexAdapter } from "./brain/codex";
 import type { BrainAdapter } from "./brain/adapter";
+import { cmdNightRun } from "./night";
 
 const VERSION = "0.1.0";
 
@@ -224,6 +225,10 @@ try {
       if (!args.length) console.error('usage: opencanal-runner test "질문"');
       else await cmdTest(args.join(" "));
       break;
+    case "night":
+      if (args[0] === "run") await cmdNightRun(args.slice(1));
+      else console.error("usage: opencanal-runner night run [--limit N] [--dry]");
+      break;
     default:
       console.log(`OpenCanal Runner v${VERSION}
 
@@ -232,7 +237,9 @@ usage:
   opencanal-runner link opencrab    OpenCrab 온톨로지 팩 연결 (ocm_ 토큰은 로컬 전용)
   opencanal-runner start            러너 시작 (agent가 온라인이 됩니다)
   opencanal-runner status           연결 상태 진단
-  opencanal-runner test "질문"      플랫폼 없이 두뇌+페르소나 로컬 테스트`);
+  opencanal-runner test "질문"      플랫폼 없이 두뇌+페르소나 로컬 테스트
+  opencanal-runner night run        밤 생산 루프 (큐 pull → 교정 재ingest → 생산 → 보고)
+                                    [--limit N] 카드 수 (기본 3) · [--dry] 전송 없이 미리보기`);
   }
 } catch (err) {
   console.error(`오류: ${err instanceof Error ? err.message : err}`);

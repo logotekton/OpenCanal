@@ -192,19 +192,21 @@ export function parseNightBrainOutput(raw: string, fallbackTitle: string): Night
     : text;
   try {
     const parsed = JSON.parse(jsonCandidate) as Partial<NightBrainOutput> & { content?: string };
-    if (typeof parsed.content === "string" && parsed.content.length > 0) {
+    const skipped =
+      parsed.skipped && typeof parsed.skipped === "object" && typeof parsed.skipped.reason === "string"
+        ? { reason: parsed.skipped.reason, policyId: parsed.skipped.policyId ?? null }
+        : null;
+    // skipped 응답은 content가 비어 있을 수 있다 — content 유무만으로 폴백하면 skipped가 유실된다.
+    if ((typeof parsed.content === "string" && parsed.content.length > 0) || skipped) {
       return {
         title: typeof parsed.title === "string" && parsed.title ? parsed.title : fallbackTitle,
-        content: parsed.content,
+        content: typeof parsed.content === "string" ? parsed.content : "",
         decisions: Array.isArray(parsed.decisions)
           ? parsed.decisions
               .filter((d): d is { text: string; policyId?: string | null } => typeof d?.text === "string")
               .map((d) => ({ text: d.text, policyId: d.policyId ?? null }))
           : [],
-        skipped:
-          parsed.skipped && typeof parsed.skipped === "object" && typeof parsed.skipped.reason === "string"
-            ? { reason: parsed.skipped.reason, policyId: parsed.skipped.policyId ?? null }
-            : null,
+        skipped,
       };
     }
   } catch {
