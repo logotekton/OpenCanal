@@ -3,25 +3,22 @@
 Owner: Builder M. Pure functions over already-visible candidates (the store filters visibility).
 
 The default strategy is `relevance_with_distance_bonus` (ORACLE v.5 MUST-M2, owner decision "먼 분야에
-가산점"). The distance it rewards is the content distance of MUST-M5 (v.6, owner decision "내용으로 계산"):
-term-frequency cosine over node labels, tags and summaries. Declared domains and the title never move it.
+가산점"). The distance it rewards is the content distance of MUST-M5 (v.6 owner decision "내용으로 계산", v.7
+definition): the share of the host's distinct label/tag words that the candidate also has. Summaries, node types,
+edges, the title and declared domains never move it, and words the host lacks cannot move it either (M5-PAD-1).
 The criterion may still change with the owner's research (D-003), so selection strategies stay pluggable
 (`STRATEGIES`) and every scoring decision can be explained term by term (`relevance_evidence`) and by its
 `score` for `match_explain`.
 
-Exactness (v.6 MUST-M2): ranking, τ and far_distance comparisons use unrounded values; MatchCandidate fields are
-rounded to DISPLAY_DECIMALS only for the response. Relevance and score are kept as exact fractions, with config
-numbers read as the decimals they are written as, so mathematically equal values compare equal (2.8 / 5 is 0.56, not
-0.5599999999999999) and the manifest's tie rules hold. The content distance comes from integer dot products (so it
-does not depend on iteration order) through the reduced fraction cos²: it is an exact fraction whenever the cosine is
-rational, and otherwise a float that depends on that fraction alone, so equal cosines give identical distances
-(`_distance_between` says why that is enough for every exact score tie).
+Exactness (v.6 MUST-M2, v.7 MUST-M5): ranking, τ and far_distance comparisons use unrounded values; MatchCandidate
+fields are rounded to DISPLAY_DECIMALS only for the response. Relevance, distance and score are exact fractions, with
+config numbers read as the decimals they are written as, so mathematically equal values compare equal (2.8 / 5 is
+0.56, not 0.5599999999999999) and the manifest's tie rules ("같으면 관련도, 그다음 subbrain_id") are decided by the
+rules, never by float rounding.
 """
 
 from __future__ import annotations
 
-import math
-from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from fractions import Fraction
@@ -46,7 +43,7 @@ REASON_DISPLACED = "displaced_by_diversity"
 REASON_NO_MATCH = "no_matched_terms"  # only reachable when tau <= 0: zero evidence is never selected
 
 DISPLAY_DECIMALS = 4  # MatchCandidate relevance/distance/score are rounded to this for display only
-NO_CONTENT_DISTANCE = 1.0  # MUST-M5: distance when either side has no tokens, or they share none
+NO_CONTENT_DISTANCE = 1.0  # MUST-M5: distance when the host has no words, or the candidate shares none
 
 Number = Union[int, float, Fraction]
 
@@ -93,11 +90,14 @@ def query_terms(query: str, cfg: MatchingConfig) -> list[str]:
     return _tokens([query], cfg, cfg.stopwords)
 
 
+def _label_tag_texts(version: SubbrainVersion) -> list[str]:
+    nodes = version.document.nodes
+    return [tag for node in nodes for tag in node.tags] + [node.label for node in nodes]
+
+
 def host_terms(host: SubbrainVersion, cfg: MatchingConfig) -> list[str]:
     """Terms used in whole_host mode: tokens of the host's tags and node labels (stopwords removed)."""
-    nodes = host.document.nodes
-    texts = [tag for node in nodes for tag in node.tags] + [node.label for node in nodes]
-    return _tokens(texts, cfg, cfg.stopwords)
+    return _tokens(_label_tag_texts(host), cfg, cfg.stopwords)
 
 
 def candidate_fields(candidate: SubbrainVersion, cfg: MatchingConfig) -> dict[str, list[str]]:
@@ -203,69 +203,46 @@ def score_relevance(terms: list[str], candidate: SubbrainVersion, cfg: MatchingC
 
 
 # ---------------------------------------------------------------------------
-# Content distance (ORACLE v.6 MUST-M5)
+# Content distance (ORACLE v.7 MUST-M5)
 # ---------------------------------------------------------------------------
 
 
-def _term_vector(version: SubbrainVersion, cfg: MatchingConfig) -> Counter[str]:
-    """Term frequencies over node labels, tags and summaries; title and domains are not content.
+def _content_words(version: SubbrainVersion, cfg: MatchingConfig) -> frozenset[str]:
+    """The distinct words of a version's node labels and tags (josa stripped, stopwords removed).
 
-    Each label, each tag and each summary is tokenized on its own (josa stripped, stopwords removed) and the
-    token lists are summed, so a term counts once per text it appears in.
+    Summaries, node types, edges, the title and declared domains are not content for the distance. A word counts
+    once however often it is repeated, so the set of the host is the same token set as `host_terms`.
     """
-    vector: Counter[str] = Counter()
-    for node in version.document.nodes:
-        for text in (node.label, *node.tags, node.summary):
-            vector.update(_tokenize(text, cfg, cfg.stopwords))
-    return vector
+    return frozenset(_tokens(_label_tag_texts(version), cfg, cfg.stopwords))
 
 
-def _distance_between(
-    host_vector: Counter[str], candidate_vector: Counter[str], cfg: MatchingConfig
-) -> Union[Fraction, float]:
-    """1 - min(1, cosine / distance_saturation), from integer sums: independent of iteration order.
+def _distance_between(host_words: frozenset[str], candidate_words: frozenset[str], cfg: MatchingConfig) -> Fraction:
+    """1 - min(1, similarity / distance_saturation) with similarity = |H ∩ C| / |H|, exactly.
 
-    The cosine is taken from the reduced fraction cos² = dot² / (|H|²·|C|²), and saturation is tested on it exactly
-    (cos² >= saturation²). If cos is rational (numerator and denominator of cos² are perfect squares), the distance
-    is an exact Fraction. Otherwise it is a float computed from that reduced fraction alone, so mathematically equal
-    cosines (one vector a multiple of the other, or different vectors with the same cos²) give the identical float.
-
-    That covers every exact MUST-M2 score tie: scores r1 + b(1 - c1/s) and r2 + b(1 - c2/s) (c clamped to s,
-    0 when nothing is shared) are equal only if c1 - c2 is rational. For c1 = sqrt(q1), c2 = sqrt(q2) that means
-    q1 = q2 (identical floats here) or both cosines rational (exact here); a saturated or disjoint candidate is
-    rational. So "같으면 관련도, 그다음 subbrain_id" is decided by the tie rules, not by float rounding (adversarial
-    review M2-FLOAT-TIE-1, M2-V6-FLOATTIE-1/2). The far_distance test is exact for every rational distance too.
+    The similarity is relative to the host: words the candidate adds that the host lacks change neither |H ∩ C|
+    nor |H|, so padding a candidate never makes it look farther (M5-PAD-1). An empty H gives 1. A non-positive
+    saturation makes any shared word saturate (distance 0) and keeps 1 when nothing is shared.
     """
-    if not host_vector or not candidate_vector:
+    if not host_words:
         return _exact(NO_CONTENT_DISTANCE)
-    small, large = sorted((host_vector, candidate_vector), key=len)
-    dot = sum(count * large[term] for term, count in small.items() if term in large)
-    if dot <= 0:
+    shared = len(host_words & candidate_words)
+    if shared == 0:
         return _exact(NO_CONTENT_DISTANCE)
     saturation = _exact(cfg.distance_saturation)
     if saturation <= 0:
-        return Fraction(0)  # any shared term saturates
-    norms = sum(c * c for c in host_vector.values()) * sum(c * c for c in candidate_vector.values())
-    cos2 = Fraction(dot * dot, norms)  # reduced
-    if cos2 >= saturation * saturation:
         return Fraction(0)
-    num, den = cos2.numerator, cos2.denominator
-    root_num, root_den = math.isqrt(num), math.isqrt(den)
-    if root_num * root_num == num and root_den * root_den == den:
-        return 1 - Fraction(root_num, root_den) / saturation
-    ratio = cos2 / (saturation * saturation)  # (cos / saturation)², in (0, 1)
-    return 1.0 - math.sqrt(ratio.numerator / ratio.denominator)  # int / int is correctly rounded
+    similarity = Fraction(shared, len(host_words))
+    return 1 - min(Fraction(1), similarity / saturation)
 
 
 def content_distance(host: SubbrainVersion, candidate: SubbrainVersion, cfg: MatchingConfig) -> float:
-    """MUST-M5 distance in [0, 1], unrounded: 1 - min(1, cosine / distance_saturation).
+    """MUST-M5 distance in [0, 1], unrounded: 1 - min(1, |H ∩ C| / |H| / distance_saturation).
 
-    cosine is over the term-frequency vectors of the two versions' node labels, tags and summaries. Declared
-    domains and the title never affect it. No tokens on either side -> 1.0. Symmetric and deterministic; equal
-    cosines give the identical value, and a rational distance is the float nearest to it (1/3, not
-    0.33333333333333337). match() ranks on the exact value behind it (`_distance_between`).
+    H and C are the sets of distinct words of the host's and the candidate's node labels and tags. Host-relative,
+    so not symmetric. No host words -> 1.0. Deterministic. The exact value is a rational; this is the float nearest
+    to it (1/3, not 0.33333333333333337). match() ranks on the exact value (`_distance_between`).
     """
-    return float(_distance_between(_term_vector(host, cfg), _term_vector(candidate, cfg), cfg))
+    return float(_distance_between(_content_words(host, cfg), _content_words(candidate, cfg), cfg))
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +256,7 @@ class _Scored:
 
     out: MatchCandidate  # rounded fields; selection writes `selected` and `reason` here
     relevance: Fraction
-    distance: Union[Fraction, float]  # exact when rational (_distance_between)
+    distance: Fraction
     score: Fraction  # relevance + distance_bonus * distance if eligible, else 0
     eligible: bool  # relevance >= tau and relevance > 0
     below_tau: bool  # relevance < tau
@@ -323,8 +300,8 @@ def _guarantee_diversity(order: list[_Scored], *, far_distance: float) -> None:
     """If no selected member is far (distance >= far_distance) and a truncated (eligible) candidate is, the
     first such candidate in `order` replaces the last selected member in `order`.
 
-    far_distance is read as the decimal it is written as and compared exactly (a Fraction compares exactly with a
-    float too), so a distance of exactly far_distance is far.
+    far_distance is read as the decimal it is written as and compared exactly with the exact distance, so a
+    distance of exactly far_distance is far.
     """
     threshold = _exact(far_distance)
     selected = [s for s in order if s.out.selected]
@@ -458,18 +435,18 @@ def match_with_ranking(
 
     tau = _exact(cfg.tau)
     bonus = _exact(cfg.distance_bonus)
-    host_vector = _term_vector(host, cfg)  # once per call
+    host_words = _content_words(host, cfg)  # once per call
 
     scored: list[_Scored] = []
     for candidate in candidates:
         if not _is_candidate(candidate, host):
             continue
         relevance, matched = _score_terms(clean, candidate, cfg)
-        distance = _distance_between(host_vector, _term_vector(candidate, cfg), cfg)
+        distance = _distance_between(host_words, _content_words(candidate, cfg), cfg)
         # relevance > 0 keeps NEVER-08 even if tau were configured <= 0; the bonus never lifts a below-tau
         # or zero-evidence candidate (MUST-M2 forbidden result).
         eligible = relevance >= tau and relevance > 0
-        score = relevance + bonus * Fraction(distance) if eligible else Fraction(0)
+        score = relevance + bonus * distance if eligible else Fraction(0)
         out = MatchCandidate(
             subbrain_id=candidate.subbrain_id,
             version=candidate.version,
@@ -511,7 +488,7 @@ def match(
 
     AUTO -> TOPIC if query_terms() is non-empty else WHOLE_HOST.
     Never select relevance < tau (MUST-M1). Never select candidates owned by host.owner_id (MUST-M4).
-    distance = content_distance(host, candidate) (MUST-M5); the host's term vector is built once per call.
+    distance = content_distance(host, candidate) (MUST-M5); the host's word set is built once per call.
     Every eligible candidate gets score = relevance + cfg.distance_bonus * distance, others 0.0.
     relevance_with_distance_bonus (default, MUST-M2): top max_members by (score, relevance, subbrain_id),
     then the diversity swap below over that order.

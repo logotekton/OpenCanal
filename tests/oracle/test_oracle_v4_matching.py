@@ -158,10 +158,10 @@ def test_must_m1_v4_diversity_swap_never_brings_in_a_below_tau_candidate(cfg):
     """A2 is close (distance 0); every weak candidate is far but below τ.
 
     relevance_plus_diversity may swap in a far candidate only if its relevance >= τ (stub docstring).
-    Oracle v.6 (MUST-M5): distances are content distances — A2 0, the weak candidates ≈0.78..1.0 (all >= far_distance,
-    W_TWO exactly 1.0) — not domain distances.
+    Oracle v.6 (MUST-M5): distances are content distances — not domain distances. v.7 (MUST-M5 label/tag word sets):
+    A2 0, the weak candidates 8/9..1 (all >= far_distance, W_TWO exactly 1.0).
     """
-    from ._v6 import reference_distance
+    from ._v7 import reference_distance
 
     host = fixture_version("A").document.model_dump()
     weak = [_weak_version(n) for n in sorted(WEAK_DOCS)]

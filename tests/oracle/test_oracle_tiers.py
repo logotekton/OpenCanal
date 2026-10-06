@@ -135,8 +135,9 @@ F_DOC = {
     ],
     "edges": [{"id": "f-e1", "source": "f-n1", "target": "f-n2", "relation": "covers"}],
 }  # Q-01 relevance by the config formula: 현장(tag 1.0) + 건축(label 0.8) = 1.8 / 5 = 0.36 < A2, B, C
-# Oracle v.6 MUST-M2 score = relevance + 0.3 * distance (MUST-M5 content distance): F 0.36 + 0.3 * ≈0.81 ≈ 0.60
-# > A2 0.56 + 0.3 * 0 = 0.56; B ≈ 0.63, C ≈ 0.64. (v.5 used the declared-domain distance: F 0.66, B and C 0.70.)
+# Oracle MUST-M2 score = relevance + 0.3 * distance (MUST-M5 content distance). v.7 (label/tag word sets): F shares
+# 건축, 현장 with A -> distance 7/9, score 0.36 + 0.3 * 7/9 ≈ 0.593 > A2 0.56 + 0.3 * 0 = 0.56; B = C ≈ 0.633.
+# (v.6 cosine: F ≈ 0.60, B ≈ 0.63, C ≈ 0.64; v.5 declared-domain distance: F 0.66, B and C 0.70.)
 
 
 def test_must_t1_members_truncated_by_relevance_and_flagged(seeded: World):
@@ -151,7 +152,7 @@ def test_must_t1_members_truncated_by_relevance_and_flagged(seeded: World):
     assert len(ids) == limit
     assert env["truncated"] is True
     # Oracle v.5 MUST-M2 (default strategy): eligible candidates are chosen by score, so the lowest-SCORE
-    # candidate is the one cut — A2 (0.56), not F (≈0.60 with the v.6 content distance). MUST-T1's "상위 관련도 순"
+    # candidate is the one cut — A2 (0.56), not F (≈0.593 with the v.7 content distance). MUST-T1's "상위 관련도 순"
     # predates v.5.
     assert seeded.sid("A2") not in ids, "the lowest-score candidate (MUST-M2) is the one cut"
     assert {f["subbrain_id"], seeded.sid("B"), seeded.sid("C")} == set(ids)

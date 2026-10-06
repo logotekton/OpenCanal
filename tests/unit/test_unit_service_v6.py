@@ -123,15 +123,22 @@ def test_subbrain_search_rounds_relevance_only_for_display() -> None:
     assert shown == sorted(shown, reverse=True)
 
 
-# With distance_bonus = 0.0005, Q-01 scores are A2 0.56, C 0.4 + 0.0005 × 0.8131 ≈ 0.400407 and B 0.4 + 0.0005 ×
-# 0.7532 ≈ 0.400377: B and C both display 0.4004 with relevance 0.4, so sorting the displayed fields falls back to
-# subbrain_id. Unrounded, C ranks above B (MUST-M2 v.6, "관련도가 같으면 먼 분야가 위다").
-TINY_BONUS = 0.0005
+# MUST-M5 (v.7): from host A, fixtures B and C share 2 of A's 36 label/tag words (오류, 조립): distance 7/9 each.
+# `_b_closer` is fixture B with one more of A's words as a tag (공차, not a Q-01 term): 3 of 36, distance 2/3, relevance
+# still 0.4. With distance_bonus = 0.0001, Q-01 scores are A2 0.56, C 0.4 + 0.0001 × 7/9 ≈ 0.4000778 and B
+# 0.4 + 0.0001 × 2/3 ≈ 0.4000667: both display 0.4001 with relevance 0.4, so sorting the displayed fields falls back
+# to subbrain_id. Unrounded, C ranks above B (MUST-M2 v.6, "관련도가 같으면 먼 분야가 위다").
+TINY_BONUS = 0.0001
+
+
+def _b_closer(doc: dict[str, Any]) -> dict[str, Any]:
+    first = dict(doc["nodes"][0], tags=[*doc["nodes"][0]["tags"], "공차"])
+    return dict(doc, nodes=[first, *doc["nodes"][1:]])
 
 
 def _q01_world_where_ids_would_mislead() -> tuple[Service, User, dict[str, str]]:
-    """Fixtures A (host), A2, B, C. Subbrain ids are random; retry until B's id sorts before C's, so an id tie-break
-    on the rounded scores would put B first while the exact ranking puts C first."""
+    """Fixtures A (host), A2, B (`_b_closer`), C. Subbrain ids are random; retry until B's id sorts before C's, so an
+    id tie-break on the rounded scores would put B first while the exact ranking puts C first."""
     for _ in range(64):
         store = Store(":memory:", master_key=os.urandom(32))
         svc = Service(store, _cfg(distance_bonus=TINY_BONUS))
@@ -140,7 +147,7 @@ def _q01_world_where_ids_would_mislead() -> tuple[Service, User, dict[str, str]]
         for fid in ("A", "A2", "B", "C"):
             owner, doc = _fixture(fid)
             users[fid] = _user(store, owner, Tier.EXPERT if fid == "A" else Tier.FREE)
-            sids[fid] = _publish(svc, users[fid], doc)
+            sids[fid] = _publish(svc, users[fid], _b_closer(doc) if fid == "B" else doc)
         if sids["B"] < sids["C"]:
             return svc, users["A"], sids
         store.close()
@@ -153,8 +160,8 @@ def test_canal_open_members_follow_the_exact_ranking_when_scores_round_alike() -
     assert explain["ok"], explain
     by_id = {c["subbrain_id"]: c for c in explain["candidates"]}
     b, c = by_id[sids["B"]], by_id[sids["C"]]
-    assert (b["relevance"], b["score"]) == (c["relevance"], c["score"]) == (0.4, 0.4004), "self-check: rounded tie"
-    assert c["distance"] > b["distance"], "self-check: C is farther by content"
+    assert (b["relevance"], b["score"]) == (c["relevance"], c["score"]) == (0.4, 0.4001), "self-check: rounded tie"
+    assert (c["distance"], b["distance"]) == (0.7778, 0.6667), "self-check: C is farther by content"
     rounded = [m.subbrain_id for m in matching.in_rank_order(
         [MatchCandidate.model_validate(x) for x in explain["candidates"]], explain["strategy"]
     )]

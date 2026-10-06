@@ -680,9 +680,9 @@ class Service:
             if host_sv is not None
             else _withheld(self._store.withheld_ref(canal.id, canal.host_subbrain_id))
         )
-        # Member scores are derived from the host too: the content distance from the host's labels, tags and summaries
-        # (MUST-M5), and in whole_host mode the terms (so relevance and matched_terms) are the host's own tags and
-        # labels. A withheld host hides those.
+        # Member scores are derived from the host too: the content distance is the share of the host's label/tag words
+        # the member also has (MUST-M5 v.7), and in whole_host mode the terms (so relevance and matched_terms) are the
+        # host's own tags and labels. A withheld host hides those.
         host_derived: set[str] = set()
         if host_sv is None:
             host_derived = {"distance"}

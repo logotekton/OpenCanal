@@ -14,11 +14,21 @@ best one is put in. Q-01 ranks B·C above A2; Q-02 keeps A2 first.
 §9 (v.6): distance_saturation 0.25, far_distance 0.5; fixture cosine A–A2 0.34; Q-01 B·C distances ≈ 0.75·0.81;
 rounding twice flipped the score order and the relevance tie-break (adversarial review M2-ROUND-1).
 
-Expected values come from the independent reference in _v6.py (never from the implementation). Reported relevance,
-distance and score may be rounded for display, so reported values are compared with DISPLAY_TOL; rankings are
+Expected values come from the independent reference in _v7.py (v.6: _v6.py; never from the implementation). Reported
+relevance, distance and score may be rounded for display, so reported values are compared with DISPLAY_TOL; rankings are
 observed through selection under max_members and — for canal_open, where nothing is truncated — the order of
 `members`. A distance is observed through MatchCandidate.distance (models.py: "content distance from host (v.6
 MUST-M5)") and through match_explain / canal_open; no helper function name is assumed.
+
+Updated for Oracle v.7 (2026-10-06.7). MUST-M5 now reads: "유사도 = 호스트 낱말 중 후보도 가진 낱말의 비율 = |H ∩ C| ÷
+|H|. H와 C는 ... 노드 라벨과 태그에서 textnorm.tokenize(조사 제거, 불용어 제거)로 만든 서로 다른 낱말의 집합이다. 요약,
+노드 유형, 엣지, 제목, 신고한 분야(domains)는 쓰지 않는다 ... H가 비면 거리 1. 계산은 정확해야 하고(유리수)". The cosine
+reference (_v6.py) is replaced by _v7.py, and only what v.7 contradicts changed here: summaries no longer count
+(test_must_m5_other_fields_do_not_count), word frequency no longer counts (test_must_m5_word_repetition_does_not_count),
+removing summaries no longer moves the distance, B and C now tie at 7/9 (§9 v.7 "B·C 0.056") so the Q-01 order is
+B, C (subbrain_id ascending), A2, and the constructed candidates were rebuilt so that their stated near/far roles hold
+under v.7. The §9 v.6 numbers (cosine A–A2 0.34, B ≈ 0.75, C ≈ 0.81) are withdrawn; the v.7 numbers and the new v.7
+properties (padding, repetition, exactness, other fields) are pinned in test_oracle_v7_matching.py.
 """
 
 from __future__ import annotations
@@ -44,18 +54,18 @@ from .conftest import (
     member_ids,
 )
 from ._v4 import reference_relevance, version_from_doc
-from ._v6 import (
+from ._v7 import (
     DISJOINT,
     FAR_020,
     FAR_060,
     NEAR_060,
     NO_WORDS,
+    add_tags,
     m2_order_key,
     nodes_doc,
     reference_distance,
     reference_score,
-    reference_similarity,
-    reference_term_vector,
+    reference_word_set,
     with_meta,
 )
 from .test_oracle_v4_matching import AT_TAU_DOC, WEAK_DOCS
@@ -126,17 +136,9 @@ def test_must_m5_config_values_from_section9(cfg):
     assert m.strategy == DEFAULT
 
 
-def test_must_m5_reference_reproduces_the_oracle_section9_numbers(cfg):
-    """Self-check of the reference against the numbers the Oracle quotes (§9 v.6), not against the implementation."""
-    m = cfg.matching
-    assert reference_similarity(_host(), _doc("A2"), m) == pytest.approx(0.34, abs=0.005)
-    assert _dist(_doc("A2"), cfg) == 0.0, "0.34 >= saturation 0.25 -> distance 0"
-    assert _dist(_doc("B"), cfg) == pytest.approx(0.75, abs=0.005)
-    assert _dist(_doc("C"), cfg) == pytest.approx(0.81, abs=0.005)
-    assert _dist(_doc("X"), cfg) == 1.0, "X shares no word with A"
-    assert 0.9 < _dist(_doc("D"), cfg) < 1.0, "D shares only the incidental words 한다·된다 with A"
-    # the declared fields of the fixtures say otherwise: A2 shares A's domains, B/C/D/X share none
-    assert _doc("A2")["domains"] == _host()["domains"]
+# The v.6 self-check against the §9 (v.6) numbers (cosine A–A2 0.34, B ≈ 0.75, C ≈ 0.81, D just below 1) is withdrawn by
+# v.7; its successor against the §9 (v.7) numbers (A2 0.278, B·C 0.056, D·X 0) is
+# test_oracle_v7_matching.py::test_must_m5_v7_reference_reproduces_the_oracle_section9_numbers.
 
 
 # ===========================================================================
@@ -152,9 +154,12 @@ def test_must_m5_fixture_distances_from_host_a(cfg, query):
     for fid in FIXTURES:
         assert by_id[fixture_sid(fid)].distance == pytest.approx(_dist(_doc(fid), cfg), abs=DISPLAY_TOL), fid
         assert 0.0 <= by_id[fixture_sid(fid)].distance <= 1.0
-    assert by_id[fixture_sid("A2")].distance == pytest.approx(0.0, abs=1e-9), "A2: cosine 0.34 >= 0.25"
+    assert by_id[fixture_sid("A2")].distance == pytest.approx(0.0, abs=1e-9), "A2: 10/36 >= 0.25 (§9 v.7 0.278)"
     assert by_id[fixture_sid("X")].distance == pytest.approx(1.0, abs=1e-9), "X: no word in common"
-    assert by_id[fixture_sid("B")].distance < by_id[fixture_sid("C")].distance < by_id[fixture_sid("D")].distance
+    # v.7 (§9 v.7 "B·C 0.056", "D·X 0"): B and C share the same two words with A -> exactly the same distance (v.6
+    # cosine had B < C); D shares no label/tag word -> 1.
+    assert by_id[fixture_sid("B")].distance == by_id[fixture_sid("C")].distance < by_id[fixture_sid("D")].distance
+    assert by_id[fixture_sid("D")].distance == pytest.approx(1.0, abs=1e-9)
 
 
 def test_must_m5_candidate_declared_domains_and_title_do_not_change_the_distance(cfg):
@@ -203,7 +208,7 @@ def test_must_m5_identical_content_is_distance_zero(cfg):
     same = with_meta(_host(), title="퍼즐 게임 블록 설계 원칙", domains=["게임 디자인"])
     shuffled = copy.deepcopy(same)
     shuffled["nodes"] = list(reversed(shuffled["nodes"]))
-    assert reference_term_vector(shuffled, cfg.matching) == reference_term_vector(_host(), cfg.matching)
+    assert reference_word_set(shuffled, cfg.matching) == reference_word_set(_host(), cfg.matching)
     by_id = _by_id(_match(Q01, [_v(same, "sb_same"), _v(shuffled, "sb_shuf")], cfg))
     assert by_id["sb_same"].distance == pytest.approx(0.0, abs=1e-9)
     assert by_id["sb_shuf"].distance == pytest.approx(0.0, abs=1e-9)
@@ -218,9 +223,9 @@ def test_must_m5_disjoint_content_is_distance_one_even_with_the_hosts_title_and_
 
 
 def test_must_m5_no_words_is_distance_one(cfg):
-    """MUST-M5 "낱말이 없으면 거리 1": labels/tags/summaries that tokenize to nothing (title, domains and an edge summary
-    carry the host's words, and must not count)."""
-    assert reference_term_vector(NO_WORDS, cfg.matching) == {}
+    """MUST-M5 "H가 비면 거리 1" (v.7; v.6 "낱말이 없으면 거리 1"): labels and tags that tokenize to nothing (title,
+    domains and an edge summary carry the host's words, and must not count)."""
+    assert reference_word_set(NO_WORDS, cfg.matching) == frozenset()
     cand = _by_id(_match(Q01, [_v(NO_WORDS, "sb_O")], cfg))["sb_O"]
     assert cand.distance == pytest.approx(1.0, abs=1e-9)
     # a host without words: every candidate is at distance 1, even a copy of A
@@ -263,8 +268,9 @@ def _field_variant(where: str) -> dict:
     return doc
 
 
-@pytest.mark.parametrize("where", ["label", "tag", "summary"])
-def test_must_m5_node_labels_tags_and_summaries_count(cfg, where):
+@pytest.mark.parametrize("where", ["label", "tag"])
+def test_must_m5_node_labels_and_tags_count(cfg, where):
+    """v.7 (MUST-M5 "노드 라벨과 태그"): labels and tags count; the v.6 "summary" case moved to the next test."""
     doc = _field_variant(where)
     ref = _dist(doc, cfg)
     assert ref < 1.0 and _dist(_FIELD_BASE, cfg) == 1.0, "self-check"
@@ -273,9 +279,10 @@ def test_must_m5_node_labels_tags_and_summaries_count(cfg, where):
     assert c.distance < 1.0
 
 
-@pytest.mark.parametrize("where", ["type", "edge_summary", "title", "domains"])
+@pytest.mark.parametrize("where", ["summary", "type", "edge_summary", "title", "domains"])
 def test_must_m5_other_fields_do_not_count(cfg, where):
-    """MUST-M5 lists node labels, tags and summaries; title and domains are excluded by name."""
+    """MUST-M5 (v.7) lists node labels and tags only; "요약, 노드 유형, 엣지, 제목, 신고한 분야(domains)는 쓰지 않는다".
+    (v.6 counted summaries; v.7 moved "summary" here.)"""
     doc = _field_variant(where)
     assert _dist(doc, cfg) == 1.0, "self-check"
     c = _by_id(_match(Q01, [_v(doc, "sb_F")], cfg))["sb_F"]
@@ -287,9 +294,12 @@ def test_must_m5_words_come_from_textnorm_tokenize(cfg):
     distance, and stopwords shared with the host do not make two subbrains similar."""
     bare = nodes_doc("메모", ["토목"], [{"label": "유닛 순서", "tags": ["현장"], "summary": "공장 위치 하천 둑"}], "p")
     josa = nodes_doc("메모", ["토목"], [{"label": "유닛을 순서는", "tags": ["현장에서"], "summary": "공장의 위치를 하천과 둑"}], "p")
-    assert reference_term_vector(bare, cfg.matching) == reference_term_vector(josa, cfg.matching)
-    stop_host = nodes_doc("메모", ["x"], [{"label": "아이디어 방법", "tags": ["평가"], "summary": "제빵 반죽"}], "h")
-    stop_cand = nodes_doc("메모", ["y"], [{"label": "아이디어 방법", "tags": ["평가"], "summary": "하천 둑"}], "s")
+    assert reference_word_set(bare, cfg.matching) == reference_word_set(josa, cfg.matching)
+    # v.7: the non-stopwords moved from the summaries to the tags, so the host's word set is not empty (summaries no
+    # longer count, and an empty H would give distance 1 for a different reason).
+    stop_host = nodes_doc("메모", ["x"], [{"label": "아이디어 방법", "tags": ["평가", "제빵", "반죽"], "summary": "제빵 반죽"}], "h")
+    stop_cand = nodes_doc("메모", ["y"], [{"label": "아이디어 방법", "tags": ["평가", "하천", "둑"], "summary": "하천 둑"}], "s")
+    assert reference_word_set(stop_host, cfg.matching) == {"제빵", "반죽"}
     assert reference_distance(stop_host, stop_cand, cfg.matching) == 1.0
     by_id = _by_id(_match(Q01, [_v(bare, "sb_bare"), _v(josa, "sb_josa")], cfg))
     assert by_id["sb_bare"].distance == pytest.approx(_dist(bare, cfg), abs=DISPLAY_TOL)
@@ -299,8 +309,9 @@ def test_must_m5_words_come_from_textnorm_tokenize(cfg):
     assert c.distance == pytest.approx(1.0, abs=1e-9), "shared stopwords only -> nothing in common"
 
 
-def test_must_m5_word_frequency_counts_not_just_presence(cfg):
-    """A frequency vector: the same set of words with different counts gives a different distance."""
+def test_must_m5_word_repetition_does_not_count(cfg):
+    """v.7 (MUST-M5 "서로 다른 낱말의 집합"): the same set of words with different counts gives the SAME distance.
+    (v.6, a frequency vector, pinned the opposite: test_must_m5_word_frequency_counts_not_just_presence.)"""
     once = nodes_doc("메모", ["토목"], [{"label": "유닛 하천", "tags": ["둑"], "summary": "제방 보강"}], "w")
     many = nodes_doc(
         "메모",
@@ -311,12 +322,12 @@ def test_must_m5_word_frequency_counts_not_just_presence(cfg):
         ],
         "w",
     )
-    assert set(reference_term_vector(once, cfg.matching)) == set(reference_term_vector(many, cfg.matching))
+    assert reference_word_set(once, cfg.matching) == reference_word_set(many, cfg.matching)
     d_once, d_many = _dist(once, cfg), _dist(many, cfg)
-    assert abs(d_once - d_many) > 0.05, "self-check: counts matter"
+    assert d_once == d_many == 8 / 9, "self-check: one of A's words (유닛), counts do not matter"
     by_id = _by_id(_match(Q01, [_v(once, "sb_once"), _v(many, "sb_many")], cfg))
     assert by_id["sb_once"].distance == pytest.approx(d_once, abs=DISPLAY_TOL)
-    assert by_id["sb_many"].distance == pytest.approx(d_many, abs=DISPLAY_TOL)
+    assert by_id["sb_many"].distance == by_id["sb_once"].distance, "repeating a word moved the distance"
 
 
 def test_must_m5_content_change_changes_the_distance(cfg):
@@ -329,12 +340,14 @@ def test_must_m5_content_change_changes_the_distance(cfg):
     for n in no_summaries["nodes"]:
         n.pop("summary", None)
     refs = {"sb_B": _dist(b, cfg), "sb_Bc": _dist(closer, cfg), "sb_Bn": _dist(no_summaries, cfg)}
-    assert refs["sb_Bc"] < refs["sb_B"] - 0.1 and abs(refs["sb_Bn"] - refs["sb_B"]) > 0.01, "self-check"
+    # v.7 (MUST-M5 "요약 ... 쓰지 않는다"): removing the summaries no longer moves the distance (v.6: it did).
+    assert refs["sb_Bc"] < refs["sb_B"] - 0.1 and refs["sb_Bn"] == refs["sb_B"], "self-check"
     cands = [_v(b, "sb_B", "user_b"), _v(closer, "sb_Bc", "user_b2"), _v(no_summaries, "sb_Bn", "user_b3")]
     by_id = _by_id(_match(Q01, cands, cfg, max_members=10))
     for sid, ref in refs.items():
         assert by_id[sid].distance == pytest.approx(ref, abs=DISPLAY_TOL), sid
     assert by_id["sb_Bc"].distance < by_id["sb_B"].distance
+    assert by_id["sb_Bn"].distance == by_id["sb_B"].distance, "summaries do not count (v.7)"
 
 
 def test_must_m5_distance_is_deterministic(cfg):
@@ -439,7 +452,8 @@ def test_must_m2_v6_q01_scores_and_order_follow_the_content_distance(cfg):
         rel = min(1.0, reference_relevance(Q01_TERMS, _doc(fid), m)[0])
         ref[fid] = (rel, _dist(_doc(fid), cfg))
     order = sorted((f for f in FIXTURES if ref[f][0] >= m.tau), key=lambda f: m2_order_key(fixture_sid(f), *ref[f], m))
-    assert order == ["C", "B", "A2"], f"self-check of the reference order: {order}"
+    # v.7: B and C tie (7/9, 0.40) -> subbrain_id ascending (v.6 cosine: C, B, A2)
+    assert order == ["B", "C", "A2"], f"self-check of the reference order: {order}"
     by_id = _by_id(_match(Q01, _fixtures(), cfg))
     for fid in FIXTURES:
         assert by_id[fixture_sid(fid)].score == pytest.approx(reference_score(*ref[fid], m), abs=DISPLAY_TOL), fid
@@ -495,23 +509,40 @@ def test_must_m2_v6_rounding_must_not_create_a_tie_that_relevance_breaks_the_wro
     assert result.truncated is True
 
 
+# v.7: B and C are at the same distance (7/9), so the closer candidate is B plus one of A's words (유닛) as a tag:
+# relevance under Q-01 unchanged (0.40), 3 shared words -> distance 2/3. It keeps the id sb_B, which sorts first.
+B_PLUS1 = add_tags(load_brain("B")["document"], 0, ["유닛"])
+
+
+def _fixtures_b_plus1():
+    return [
+        fixture_version("A2"),
+        _v(B_PLUS1, fixture_sid("B"), "user_b"),
+        *(fixture_version(f) for f in ("C", "D", "X")),
+    ]
+
+
 def test_must_m2_v6_rounding_must_not_hide_a_small_distance_difference_at_equal_relevance(cfg):
-    """Q-01: B and C have equal relevance; with a tiny bonus their scores differ by 3e-5 (C farther). Rounded, the
-    full tie would fall to subbrain_id (sb_B first); unrounded, C ranks above B ("관련도가 같으면 먼 분야가 위다")."""
+    """Q-01: B' (B plus one host word) and C have equal relevance; with a tiny bonus their scores differ by 3e-5 (C
+    farther). Rounded, the full tie would fall to subbrain_id (sb_B first); unrounded, C ranks above B' ("관련도가 같으면
+    먼 분야가 위다"). v.7 (MUST-M5): B itself now ties C exactly (both 7/9), so B' replaces B here."""
     m = cfg.matching
-    d_b, d_c = _dist(_doc("B"), cfg), _dist(_doc("C"), cfg)
+    d_b, d_c = _dist(B_PLUS1, cfg), _dist(_doc("C"), cfg)
+    assert (d_b, d_c) == (2 / 3, 7 / 9) and d_b >= m.far_distance, "self-check (v.7: 3 and 2 of A's 36 words)"
+    rel_b, rel_c = reference_relevance(Q01_TERMS, B_PLUS1, m)[0], reference_relevance(Q01_TERMS, _doc("C"), m)[0]
+    assert rel_b == rel_c == pytest.approx(0.40), "self-check: the added tag is no Q-01 term"
     bonus = 3e-5 / (d_c - d_b)
     s_b, s_c = 0.40 + bonus * d_b, 0.40 + bonus * d_c
     assert s_c - s_b == pytest.approx(3e-5, abs=1e-9)
     assert _r4(s_b) == _r4(s_c) and _double_rounded(0.40, d_b, bonus) == _double_rounded(0.40, d_c, bonus), "self-check"
     assert fixture_sid("B") < fixture_sid("C")
     mcfg = m.model_copy(update={"distance_bonus": bonus})
-    two = _match(Q01, _fixtures(), cfg, max_members=2, mcfg=mcfg)
+    two = _match(Q01, _fixtures_b_plus1(), cfg, max_members=2, mcfg=mcfg)
     assert _selected(two) == {fixture_sid("A2"), fixture_sid("C")}, f"selected {_selected(two)}"
-    # one slot: A2 (0.56) is close, so the guarantee swaps in the BEST far candidate — C, not B
-    one = _match(Q01, _fixtures(), cfg, max_members=1, mcfg=mcfg)
+    # one slot: A2 (0.56) is close, so the guarantee swaps in the BEST far candidate — C, not B'
+    one = _match(Q01, _fixtures_b_plus1(), cfg, max_members=1, mcfg=mcfg)
     assert _selected(one) == {fixture_sid("C")}, f"selected {_selected(one)}"
-    only_bc = _match(Q01, [fixture_version("B"), fixture_version("C")], cfg, max_members=1, mcfg=mcfg)
+    only_bc = _match(Q01, [_v(B_PLUS1, fixture_sid("B"), "user_b"), fixture_version("C")], cfg, max_members=1, mcfg=mcfg)
     assert _selected(only_bc) == {fixture_sid("C")}
 
 
@@ -554,8 +585,8 @@ def _h():
 
 
 def test_must_m2_v6_a_selected_member_at_far_distance_satisfies_the_guarantee(cfg):
-    """M (0.60, content distance ≈ 0.56 >= far_distance) is selected next to H: nothing is swapped, although M declares
-    the host's own domains and T (0.20, ≈ 0.56) is also far."""
+    """M (0.60, content distance 2/3 >= far_distance) is selected next to H: nothing is swapped, although M declares
+    the host's own domains and T (0.20, 7/9) is also far. (v.7 values; v.6 cosine: ≈ 0.56 both.)"""
     host = _host()
     assert cfg.matching.far_distance <= _dist(FAR_060, cfg) < 1.0 and FAR_060["domains"] == host["domains"]
     assert _dist(AT_TAU_DOC, cfg) >= cfg.matching.far_distance
@@ -564,8 +595,9 @@ def test_must_m2_v6_a_selected_member_at_far_distance_satisfies_the_guarantee(cf
 
 
 def test_must_m2_v6_a_member_just_below_far_distance_does_not_satisfy_the_guarantee(cfg):
-    """N (0.60, ≈ 0.40 < far_distance) is selected by score next to H; the best eligible far candidate T (0.20, ≈ 0.56)
-    replaces N (the lowest-ranked member). far_distance is read from config."""
+    """N (0.60, 4/9 < far_distance) is selected by score next to H; the best eligible far candidate T (0.20, 7/9)
+    replaces N (the lowest-ranked member). far_distance is read from config. (v.7 values; NEAR_060 rebuilt with its host
+    words in tags, since v.7 no longer reads summaries; v.6 cosine: N ≈ 0.40, T ≈ 0.56.)"""
     m = cfg.matching
     d_n, d_t = _dist(NEAR_060, cfg), _dist(AT_TAU_DOC, cfg)
     assert 0.0 < d_n < m.far_distance <= d_t < 1.0, "self-check"
@@ -573,15 +605,17 @@ def test_must_m2_v6_a_member_just_below_far_distance_does_not_satisfy_the_guaran
     assert _selected(_match(QK, cands, cfg, max_members=2)) == {"sb_H", "sb_T"}
     assert _selected(_match(QK, cands, cfg, max_members=1)) == {"sb_T"}
     assert _selected(_match(QK, cands, cfg, max_members=3)) == {"sb_H", "sb_N", "sb_T"}
-    lower = m.model_copy(update={"far_distance": 0.35})  # N now counts as far
+    lower = m.model_copy(update={"far_distance": 0.35})  # N (4/9) now counts as far
     assert _selected(_match(QK, cands, cfg, max_members=2, mcfg=lower)) == {"sb_H", "sb_N"}
-    higher = m.model_copy(update={"far_distance": 0.6})  # no eligible candidate is far any more
+    assert d_t < 0.8, "self-check: T (7/9) is below the raised threshold"
+    higher = m.model_copy(update={"far_distance": 0.8})  # no eligible candidate is far any more (v.7: T is 7/9 > 0.6)
     assert _selected(_match(QK, cands, cfg, max_members=2, mcfg=higher)) == {"sb_H", "sb_N"}
 
 
 def test_must_m2_v6_the_best_far_candidate_is_swapped_in_never_a_below_tau_one(cfg):
-    """H (1.00, d0) and Z (0.60, d0) win on score. Far eligible: T1 (0.20, ≈0.56 -> ≈0.369) and T2 (0.20, ≈0.63 ->
-    ≈0.388); far below τ: W_TWO (0.18, d1 -> would-be 0.48). T2 is the best by MUST-M2 order (its id sorts after T1)."""
+    """H (1.00, d0) and Z (0.60, d0) win on score. Far eligible: T1 (0.20, 7/9 -> ≈0.433) and T2 (0.20, 8/9 ->
+    ≈0.467); far below τ: W_TWO (0.18, d1 -> would-be 0.48). T2 is the best by MUST-M2 order (its id sorts after T1).
+    (v.7 values; v.6 cosine: T1 ≈ 0.56, T2 ≈ 0.63.)"""
     m = cfg.matching
     s1 = reference_score(0.20, _dist(AT_TAU_DOC, cfg), m)
     s2 = reference_score(0.20, _dist(FAR_020, cfg), m)
@@ -608,18 +642,21 @@ def test_must_m2_v6_a_declared_far_field_does_not_make_a_close_member_far(cfg):
 # ===========================================================================
 
 
-def _reference_q01_order(cfg) -> list[str]:
+def _reference_q01_order(cfg, sid=fixture_sid) -> list[str]:
+    """MUST-M2 order of the Q-01 eligible fixtures; `sid` maps a fixture to the subbrain_id the tie-break sees."""
     m = cfg.matching
     ref = {f: (min(1.0, reference_relevance(Q01_TERMS, _doc(f), m)[0]), _dist(_doc(f), cfg)) for f in FIXTURES}
-    return sorted((f for f in FIXTURES if ref[f][0] >= m.tau), key=lambda f: m2_order_key(fixture_sid(f), *ref[f], m))
+    return sorted((f for f in FIXTURES if ref[f][0] >= m.tau), key=lambda f: m2_order_key(sid(f), *ref[f], m))
 
 
 def test_must_m2_v6_canal_open_q01_expert_host_orders_members_by_score(seeded: World):
     seeded.set_tier("user_a", Tier.EXPERT)  # 10 slots: nothing is truncated, so only the order can rank
     env = assert_ok(seeded.open_canal(query=Q01))
-    order = _reference_q01_order(seeded.cfg)
-    assert order == ["C", "B", "A2"]
-    assert member_ids(env) == [seeded.sid(f) for f in order], "MUST-M2 v.6: C (≈0.644) > B (≈0.626) > A2 (0.56)"
+    order = _reference_q01_order(seeded.cfg, seeded.sid)
+    # v.7 (MUST-M5): B and C tie (0.40 + 0.3 × 7/9 ≈ 0.633), so their order is the server ids' ascending order
+    # (MUST-M2 "그다음 subbrain_id 오름차순"); A2 (0.56) is last. (v.6 cosine: C ≈ 0.644 > B ≈ 0.626.)
+    assert set(order[:2]) == {"B", "C"} and order[2] == "A2" and len(order) == 3
+    assert member_ids(env) == [seeded.sid(f) for f in order], "MUST-M2: B = C (≈0.633, subbrain_id asc) > A2 (0.56)"
     assert env["truncated"] is False
     for mbr in env["members"]:
         if "score" in mbr:

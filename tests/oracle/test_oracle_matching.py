@@ -113,12 +113,14 @@ def test_must_m1_match_is_deterministic(cfg):
 
 
 def test_must_m1_domain_distance(cfg):
-    """Oracle v.6 MUST-M5: the candidate distance is the content distance, not 1 − Jaccard of declared domains.
+    """Oracle MUST-M5: the candidate distance is the content distance, not 1 − Jaccard of declared domains.
 
     (v.5 pinned matching.domain_distance: A2 0, B 1, D 1. v.6 forbids declared domains as the distance; the distance is
-    observed on MatchCandidate.distance, with values from the independent reference in _v6.py.)
+    observed on MatchCandidate.distance, with values from the independent reference in _v7.py.)
+    v.7 (MUST-M5 "|H ∩ C| ÷ |H| ... 노드 라벨과 태그"; §9 (v.7) "A2 0.278, B·C 0.056, D·X 0"): B is 1 − (2/36)/0.25 =
+    7/9 (v.6 cosine ≈ 0.75), and D shares no label/tag word with A, so it is exactly 1 (v.6: < 1 through summaries).
     """
-    from ._v6 import reference_distance
+    from ._v7 import reference_distance
 
     by_id = _by_id(_match(Q01, cfg=cfg))
     host = load_brain("A")["document"]
@@ -126,8 +128,8 @@ def test_must_m1_domain_distance(cfg):
         ref = reference_distance(host, load_brain(fid)["document"], cfg.matching)
         assert by_id[fixture_sid(fid)].distance == pytest.approx(ref, abs=1e-3), fid
     assert by_id[fixture_sid("A2")].distance == pytest.approx(0.0)
-    assert by_id[fixture_sid("B")].distance == pytest.approx(0.75, abs=0.005)  # §9 (v.6) "거리 약 0.75"
-    assert by_id[fixture_sid("D")].distance < 1.0  # D shares two incidental words with A
+    assert by_id[fixture_sid("B")].distance == pytest.approx(7 / 9, abs=1e-3)  # §9 (v.7) "B·C 0.056" -> 1 − 0.056/0.25
+    assert by_id[fixture_sid("D")].distance == pytest.approx(1.0, abs=1e-9)  # §9 (v.7) "D·X 0"
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +202,9 @@ def test_prov_m2_relevance_only_takes_top_relevance(cfg):
 
 
 def test_prov_m2_diversity_includes_a_distant_relevant_candidate(cfg):
-    """Oracle v.6: with content distance B (≈0.75) and C (≈0.81) are no longer at exactly 1.0; §9 (v.6) sets the
-    diversity guarantee's "far candidate" to distance >= far_distance ("정확히 1.0이 드물어 ... 0.5로 둔다")."""
+    """Oracle v.6: with content distance B and C are no longer at exactly 1.0 (v.7: both 7/9, §9 (v.7) "B·C 0.056");
+    §9 (v.6) sets the diversity guarantee's "far candidate" to distance >= far_distance ("정확히 1.0이 드물어 ... 0.5로
+    둔다")."""
     result = _match(Q01, cfg=cfg, max_members=1, strategy="relevance_plus_diversity")
     assert result.strategy == "relevance_plus_diversity"
     selected = [c for c in result.candidates if c.selected]
@@ -351,6 +354,6 @@ def test_never_08_q03_no_relevant_subbrain_creates_no_canal(seeded: World):
 
 
 def test_prov_m2_canal_open_default_strategy_includes_distant_member(seeded: World):
-    # Oracle v.6 MUST-M2: "distant" is distance >= far_distance (content distance; B ≈ 0.75, C ≈ 0.81), not == 1.0.
+    # Oracle v.6 MUST-M2: "distant" is distance >= far_distance (content distance; v.7: B = C = 7/9), not == 1.0.
     env = assert_ok(seeded.open_canal(query=Q01))
     assert any(m["distance"] >= seeded.cfg.matching.far_distance for m in env["members"])

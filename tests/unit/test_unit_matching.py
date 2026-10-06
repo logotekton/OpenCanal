@@ -1,10 +1,10 @@
 """Unit tests for opencanal.matching (Builder M). Hand-built SubbrainVersions, no store.
 
 Terms, relevance, query modes and visibility use HOST and friends (shaped after ORACLE §6.1). Strategy tests
-use HS, a host whose term vector is four tokens counted once (norm 2), and candidates built by `_shaped`, so
-every content distance (ORACLE v.6 MUST-M5) is exact by hand: cos = shared / (2 * sqrt(k)) for a candidate of
-k tokens counted once, `shared` of them in HS; distance = 1 - min(1, cos / 0.25). The content-distance function
-itself is pinned in test_unit_matching_distance.py.
+use HS, a host of 48 distinct label words, and candidates built by `_shaped` that carry the first `shared` of them,
+so every content distance (ORACLE v.7 MUST-M5) is exact by hand: similarity = shared / 48,
+distance = 1 - min(1, similarity / 0.25) = 1 - min(1, shared / 12). The content-distance function itself is pinned
+in test_unit_matching_distance.py.
 """
 
 from __future__ import annotations
@@ -147,11 +147,18 @@ ALL = [HOST, OWN_OTHER, A2, B, C, D, P]
 
 
 # ---------------------------------------------------------------------------
-# Strategy pool: a host with a norm-2 term vector and candidates of known content distance
+# Strategy pool: a host of 48 words and candidates of known content distance
 # ---------------------------------------------------------------------------
 
-HS_TOKENS = ("공차", "접합부", "양중", "인양")  # no Q-01 term, no substring of one
-HS = _sv("H", "user_host", domains=["건축", "BIM"], title="모듈러 건축 노트", nodes=[_node("h1", " ".join(HS_TOKENS))])
+# 48 words: no Q-01 term, no substring of one. distance from HS = 1 - min(1, shared / 12).
+HS_TOKENS = ("공차", "접합부", "양중", "인양", *(f"hs{i:02d}" for i in range(44)))
+
+
+def _label_nodes(words, prefix: str) -> list[SubbrainNode]:
+    return [_node(f"{prefix}{i // 16}", " ".join(words[i : i + 16])) for i in range(0, len(words), 16)]
+
+
+HS = _sv("H", "user_host", domains=["건축", "BIM"], title="모듈러 건축 노트", nodes=_label_nodes(HS_TOKENS, "h"))
 
 
 def _shaped(
@@ -162,43 +169,35 @@ def _shaped(
     label: tuple[str, ...] = (),
     summary: tuple[str, ...] = (),
     shared: int = 0,
-    distinct: int | None = None,
+    fillers: int = 0,
     domains: tuple[str, ...] = ("z",),
     visibility: Visibility = Visibility.PUBLIC,
 ) -> SubbrainVersion:
-    """A candidate whose term vector is `distinct` tokens counted once: its tags, label and summary words,
-    the first `shared` HS tokens, and fillers f0, f1, ... (which match no query term).
+    """A candidate with its tags, label and summary words on one node (label "f0" if none), the first `shared` HS
+    tokens and `fillers` words the host lacks as labels of further nodes. Fillers match no query term.
 
-    Against HS: cos = shared / (2 * sqrt(distinct)), distance = 1 - min(1, cos / 0.25).
+    Against HS: distance = 1 - min(1, shared / 12); fillers never change it (MUST-M5 v.7).
     """
-    content = [*tags, *label, *summary, *HS_TOKENS[:shared]]
-    assert len(set(content)) == len(content)
-    head = [*label, *HS_TOKENS[:shared]]
-    if distinct is None:
-        distinct = len(content) + (0 if head else 1)
-    fillers = [f"f{i}" for i in range(distinct - len(content))]
-    if not head:
-        head, fillers = fillers[:1], fillers[1:]
-    assert head, "a node needs a label"
-    nodes = [_node("n0", " ".join(head), tags, summary=" ".join(summary) or None)]
-    for i in range(0, len(fillers), 20):
-        nodes.append(_node(f"n{i // 20 + 1}", " ".join(fillers[i : i + 20])))
+    content = [*tags, *label, *summary]
+    assert len(set(content)) == len(content) and not set(content) & set(HS_TOKENS)
+    nodes = [_node("n0", " ".join(label) or "f0", tags, summary=" ".join(summary) or None)]
+    nodes += _label_nodes(HS_TOKENS[:shared], "s") + _label_nodes([f"f{i + 1}" for i in range(fillers)], "f")
     return _sv(subbrain_id, owner_id, domains=list(domains), nodes=nodes, visibility=visibility)
 
 
 # Relevance is for Q01's 5 terms (denominator 5); distance is from HS; score = relevance + 0.3 * distance.
-SA2 = _shaped("A2", "user_e", tags=("모듈러", "현장", "건축"), shared=1)  # 0.6, d 0 (k 4) -> 0.6
+SA2 = _shaped("A2", "user_e", tags=("모듈러", "현장", "건축"), shared=12)  # 0.6, d 0 (similarity 1/4) -> 0.6
 SB = _shaped("B", "user_b", tags=("조립", "오류"))  # 0.4, d 1 -> 0.7
-SC = _shaped("C", "user_c", tags=("조립", "오류"), label=("형태",))  # 0.4, d 1 -> 0.7
+SC = _shaped("C", "user_c", tags=("조립", "오류"), label=("형태",), fillers=30)  # 0.4, d 1 -> 0.7
 SD = _shaped("D", "user_d", tags=("쿠폰",), summary=("빵",))  # 0.0, d 1 -> 0
-NEAR = _shaped("N", "user_n", tags=("모듈러", "현장", "조립", "오류", "건축"), shared=2)  # 1.0, d 0 (cos 0.378) -> 1.0
-A3 = _shaped("A3", "user_f", tags=("모듈러", "현장", "건축"), shared=1, distinct=16)  # 0.6, d 0.5 (cos 1/8) -> 0.75
-A4 = _shaped("A4", "user_i", tags=("모듈러", "현장", "건축"), shared=1, distinct=9)  # 0.6, d 1/3 (cos 1/6) -> 0.7
-T3 = _shaped("T3", "user_t", tags=("조립", "오류"), shared=1, distinct=9)  # 0.4, d 1/3 -> 0.5
-M75 = _shaped("M75", "user_m", tags=("조립", "오류"), shared=1, distinct=64)  # 0.4, d 0.75 (cos 1/16) -> 0.625
-A5 = _shaped("A5", "user_j", tags=("모듈러", "현장", "건축", "조립"), shared=2)  # 0.8, d 0 (cos 0.408) -> 0.8
+NEAR = _shaped("N", "user_n", tags=("모듈러", "현장", "조립", "오류", "건축"), shared=20)  # 1.0, d 0 -> 1.0
+A3 = _shaped("A3", "user_f", tags=("모듈러", "현장", "건축"), shared=6, fillers=9)  # 0.6, d 1/2 (1/8) -> 0.75
+A4 = _shaped("A4", "user_i", tags=("모듈러", "현장", "건축"), shared=8)  # 0.6, d 1/3 (1/6) -> 0.7
+T3 = _shaped("T3", "user_t", tags=("조립", "오류"), shared=8, fillers=40)  # 0.4, d 1/3 -> 0.5
+M75 = _shaped("M75", "user_m", tags=("조립", "오류"), shared=3)  # 0.4, d 3/4 (1/16) -> 0.625
+A5 = _shaped("A5", "user_j", tags=("모듈러", "현장", "건축", "조립"), shared=48)  # 0.8, d 0 -> 0.8
 FAR_LOW = _shaped("A-far", "user_g", tags=("조립",), summary=("오류",))  # 1.0 + 0.5 = 0.3, d 1 -> 0.6
-NEAR_HIGH = _shaped("Z-near", "user_z", tags=("모듈러", "현장", "건축"), shared=1)  # 0.6, d 0 -> 0.6 (= FAR_LOW)
+NEAR_HIGH = _shaped("Z-near", "user_z", tags=("모듈러", "현장", "건축"), shared=12)  # 0.6, d 0 -> 0.6 (= FAR_LOW)
 WEAK_FAR = _shaped("W", "user_w", summary=("오류",))  # 0.1 < tau, d 1 (the bonus would lift it to 0.4)
 HS_OWN = _shaped("H-own", "user_host", tags=("모듈러", "현장", "조립", "오류", "건축"))  # host's own: never listed
 HS_PRIVATE = _shaped("P", "user_b", tags=("모듈러", "현장", "조립", "오류", "건축"), visibility=Visibility.PRIVATE)
@@ -646,7 +645,7 @@ def test_in_rank_order_follows_the_strategy(cfg):
 def test_bonus_is_the_configured_default_and_registered(cfg):
     assert cfg.strategy == BONUS
     assert cfg.distance_bonus == 0.3
-    assert (cfg.distance_saturation, cfg.far_distance) == (0.25, 0.5)  # v.6 config
+    assert (cfg.distance_saturation, cfg.far_distance) == (0.25, 0.5)  # v.6 config, unchanged in v.7
     assert set(ALL_STRATEGIES) == set(STRATEGIES) == set(cfg.strategies_available)
 
 
@@ -662,7 +661,7 @@ def test_score_formula_and_gate(cfg):
 
 def test_bonus_same_relevance_distant_is_above(cfg):
     # 건축 (tag 1.0) + 오류 (summary 0.5) = 0.3 at distance 0; 조립 (tag) + 오류 (summary) = 0.3 at distance 1
-    close = _shaped("A-close", "user_y", tags=("건축",), summary=("오류",), shared=1, distinct=4)
+    close = _shaped("A-close", "user_y", tags=("건축",), summary=("오류",), shared=12)
     far = _shaped("Z-far", "user_z", tags=("조립",), summary=("오류",))
     result = match(Q01, HS, [close, far], max_members=1, cfg=cfg)
     # Same relevance 0.3; subbrain_id alone would put A-close first, the distance bonus puts Z-far first.
@@ -819,7 +818,7 @@ def test_far_boundary_is_inclusive_for_a_swapped_in_candidate(cfg, strategy):
 
 @pytest.mark.parametrize("strategy", [BONUS, "relevance_plus_diversity"])
 def test_far_candidate_below_one_is_swapped_in(cfg, strategy):
-    # M75 (distance 0.75) shares content with the host, so it is not "nothing in common"; under v.6 it is far.
+    # M75 (distance 0.75) shares content with the host, so it is not "nothing in common"; since v.6 it is far.
     # N (1.0) and A5 (0.8) are close and outrank it in both strategies.
     result = match(Q01, HS, [NEAR, A5, M75], max_members=2, cfg=cfg, strategy=strategy)
     assert {c.subbrain_id: c.reason for c in result.candidates} == {
@@ -854,10 +853,10 @@ def test_far_distance_is_read_from_config(cfg, strategy):
 
 def test_display_rounding_is_four_decimals(cfg):
     assert DISPLAY_DECIMALS == 4
-    cand = _shaped("S", "user_s", label=("자기조립",), shared=1, distinct=9)
+    cand = _shaped("S", "user_s", label=("자기조립",), shared=8)
     result = match("조립 모듈러 건축", HS, [cand], max_members=1, cfg=cfg.model_copy(update={"tau": 0.1}))
     s = _by_id(result, "S")
-    # relevance 0.4 / 3 = 2/15, distance 1 - (1/6) / 0.25 = 1/3, score 2/15 + 0.1 = 7/30
+    # relevance 0.4 / 3 = 2/15, distance 1 - (8/48) / 0.25 = 1/3, score 2/15 + 0.1 = 7/30
     assert (s.relevance, s.distance, s.score) == (0.1333, 0.3333, 0.2333)
 
 
@@ -885,7 +884,7 @@ def test_tau_equal_to_an_exact_decimal_relevance_is_inclusive(cfg):
 def test_ranking_uses_unrounded_scores(cfg, bonus, first):
     # X: 0.6 at distance 0 -> 0.6. Y: 0.4 at distance 1 -> 0.4 + bonus = 0.60004 or 0.59996.
     # Both show score 0.6; the exact values decide.
-    x = _shaped("X", "user_x", tags=("모듈러", "현장", "건축"), shared=1)
+    x = _shaped("X", "user_x", tags=("모듈러", "현장", "건축"), shared=12)
     y = _shaped("Y", "user_y", tags=("조립", "오류"))
     custom = cfg.model_copy(update={"distance_bonus": bonus})
     ranked = match_with_ranking(Q01, HS, [x, y], max_members=1, cfg=custom)
@@ -905,7 +904,7 @@ def test_ranking_uses_unrounded_scores(cfg, bonus, first):
 def test_mathematical_score_tie_is_exact_and_broken_by_relevance(cfg):
     # X: 2.8/5 = 0.56 at distance 0 -> 0.56. Y: (0.8 + 0.5)/5 = 0.26 at distance 1 -> 0.26 + 0.3 = 0.56.
     # As floats X would be 0.5599999999999999 and Y 0.56, putting Y first; exactly they tie and X wins on relevance.
-    x = _shaped("X", "user_x", tags=("모듈러", "건축"), label=("현장",), shared=1)
+    x = _shaped("X", "user_x", tags=("모듈러", "건축"), label=("현장",), shared=12)
     y = _shaped("Y", "user_y", label=("조립",), summary=("오류",))
     assert (2.8 / 5, (0.8 + 0.5) / 5 + 0.3) == (0.5599999999999999, 0.56)  # self-check: float noise
     ranked = match_with_ranking(Q01, HS, [y, x, SB], max_members=2, cfg=cfg)
