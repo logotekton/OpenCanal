@@ -2,20 +2,27 @@
 
 ORACLE §5.4 MUST-M2: only candidates with relevance >= τ are eligible; eligible candidates are chosen by
 score = relevance + distance_bonus(config) × distance (ties: relevance, then subbrain_id); then the diversity
-guarantee (an eligible candidate sharing no domain with the host is included when one exists). At equal relevance
-the farther field ranks higher. With the defaults, Q-01 ranks B·C above A2. Every candidate carries `score`.
-Forbidden: a below-τ candidate selected because of the bonus; the closer field above the farther at equal relevance.
-§9 (v.5): distance_bonus = 0.3; Q-02 keeps A2 (1.00) on top. models.py: MatchCandidate.score is 0 for below-τ.
+guarantee. At equal relevance the farther field ranks higher. With the defaults, Q-01 ranks B·C above A2. Every
+candidate carries `score`. Forbidden: a below-τ candidate selected because of the bonus; the closer field above the
+farther at equal relevance. §9 (v.5): distance_bonus = 0.3; Q-02 keeps A2 (1.00) on top. models.py:
+MatchCandidate.score is 0 for below-τ.
+
+Updated for Oracle v.6 (2026-10-06.6): "거리" is the MUST-M5 content distance (1 − min(1, cosine of the label/tag/summary
+word-frequency vectors ÷ distance_saturation)); declared domains no longer set it. The diversity guarantee includes
+the best eligible candidate with distance >= far_distance (config) when none is selected. Expected distances come from
+the independent reference in _v6.py; the constructed candidates below were rebuilt so that "close" means content close
+to host A (distance 0) — they deliberately declare a field the host does not have — and "far" means content far.
+New v.6 cases (rounding, far_distance threshold, MUST-M5 itself) live in test_oracle_v6_matching.py.
 
 The list order of MatchResult.candidates is NOT used to observe ranking (models.py still documents it as
 "sorted by relevance desc"); ranking is observed through which candidates are selected under max_members, through
 the score values, and — for canal_open, where nothing is truncated — through the order of `members`.
 Expected values are computed independently with the frozen formula (_v4.reference_relevance) and by hand.
 
-Constructed candidates that must sit in the host's own field share A's domains (건축, BIM), and 건축 is a Q-01 term.
-The frozen formula scores node tags/labels/summaries only (stub docstring, config field_weights, DECISIONS D-003),
-so those tests use QK, a query none of whose terms occurs in any candidate's title or domains: they pin MUST-M2 and
-nothing else. Whether title/domains are scored is pinned once, in test_must_m1_relevance_fields_*.
+The frozen relevance formula scores node tags/labels/summaries only (stub docstring, config field_weights, DECISIONS
+D-003), so the constructed-candidate tests use QK, a query none of whose terms occurs in any candidate's title or
+domains: they pin MUST-M2 and nothing else. Whether title/domains are scored is pinned once, in
+test_must_m1_relevance_fields_*.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from __future__ import annotations
 import pytest
 
 from opencanal.models import QueryMode, Tier
-from opencanal.textnorm import normalize, tokenize
+from opencanal.textnorm import tokenize
 
 from .conftest import (
     Q01,
@@ -39,6 +46,7 @@ from .conftest import (
     member_ids,
 )
 from ._v4 import reference_relevance, version_from_doc
+from ._v6 import QT, T_FAR, reference_distance
 from .test_oracle_v4_matching import AT_TAU_DOC, WEAK_DOCS
 
 DEFAULT = "relevance_with_distance_bonus"
@@ -47,59 +55,64 @@ BONUS = 0.3  # ORACLE §9 (v.5) planner proposal; read from config/matching.json
 # A topic query whose terms appear in no candidate's title or domains (see module docstring).
 QK = "현장 조립 오류 공차 양중"
 QK_TERMS = ["현장", "조립", "오류", "공차", "양중"]
-WEAK_QK = {"W_LABEL": 0.16, "W_SUB": 0.10, "W_TWO": 0.18}  # under QK; all distance 1.0 from A
+# under QK. v.6: content distances from A by the MUST-M5 reference (≈0.82, ≈0.78, 1.0), not 1.0 by domain.
+WEAK_QK = {"W_LABEL": 0.16, "W_SUB": 0.10, "W_TWO": 0.18}
 
 # ---------------------------------------------------------------------------
-# Constructed candidates (Q-01 terms: 모듈러, 건축, 현장, 조립, 오류 -> denominator 5)
+# Constructed candidates (QK terms: 현장, 조립, 오류, 공차, 양중 -> denominator 5)
+#
+# v.6 (MUST-M5): "close" now means content close to host A — the nodes reuse A's frequent words (유닛, 설치, 순서,
+# 위치, 공장 ...) so the cosine with A reaches distance_saturation and the distance is exactly 0. They declare a field
+# A does not have (게임 디자인): under the v.5 domain distance they would have been the far ones.
 # ---------------------------------------------------------------------------
 
-# relevance 0.40 (조립, 오류 exact tags: 2.0 / 5); domain identical to host A -> distance 0
+# relevance 0.40 (조립, 오류 exact tags: 2.0 / 5); content distance 0 -> score 0.40
 CLOSE_040 = {
-    "title": "철골 접합 검수 메모",
-    "domains": ["건축", "BIM"],
+    "title": "유닛 반입 검수 메모",
+    "domains": ["게임 디자인"],
     "nodes": [
-        {"id": "k-n1", "label": "볼트 체결 검수", "tags": ["조립", "검수"], "summary": "체결 토크를 표로 남긴다."},
-        {"id": "k-n2", "label": "도면 대조", "tags": ["오류", "도면"], "summary": "제작 도면과 실물을 맞춰 본다."},
+        {"id": "k-n1", "label": "유닛 설치 순서표", "tags": ["조립", "유닛", "순서"], "summary": "공장에서 온 유닛을 설치 순서대로 세운다."},
+        {"id": "k-n2", "label": "유닛 위치 대조", "tags": ["오류", "위치", "설치"], "summary": "운송 뒤 유닛 위치를 설비 도면과 맞춘다."},
     ],
     "edges": [{"id": "k-e1", "source": "k-n2", "target": "k-n1", "relation": "precedes"}],
 }
-# relevance 0.40; one shared domain of three -> distance 1 - 1/3 = 2/3
+# relevance 0.40; content distance ≈ 0.21 (between CLOSE_040 and B ≈ 0.75); declares A's own domains
 MID_040 = {
-    "title": "보드게임 말 제작 메모",
-    "domains": ["건축", "게임 디자인"],
+    "title": "블록 끼움 규칙 메모",
+    "domains": ["건축", "BIM"],
     "nodes": [
-        {"id": "m-n1", "label": "말 끼움 규칙", "tags": ["조립", "규칙"], "summary": "말은 정해진 홈에만 끼운다."},
-        {"id": "m-n2", "label": "불량 말 선별", "tags": ["오류", "선별"], "summary": "틀어진 말은 출고 전에 뺀다."},
+        {"id": "m-n1", "label": "블록 끼움 규칙", "tags": ["조립", "규칙", "블록"], "summary": "블록은 정해진 홈에만 끼운다."},
+        {"id": "m-n2", "label": "말 위치 확인", "tags": ["오류", "유닛"], "summary": "놓기 전에 순서를 확인한다."},
     ],
     "edges": [{"id": "m-e1", "source": "m-n2", "target": "m-n1", "relation": "checks"}],
 }
-# relevance 0.50 (조립, 오류 exact tags + 현장 exact summary token: 2.5 / 5); distance 0 -> score 0.50
+# relevance 0.50 (조립, 오류 exact tags + 현장 exact summary token: 2.5 / 5); content distance 0 -> score 0.50
 CLOSE_050 = {
-    "title": "철골 반입 순서 메모",
-    "domains": ["건축", "BIM"],
+    "title": "유닛 반입 순서 메모",
+    "domains": ["게임 디자인"],
     "nodes": [
-        {"id": "r-n1", "label": "반입 순서표", "tags": ["조립", "순서"], "summary": "현장 반입 순서를 정한다."},
-        {"id": "r-n2", "label": "부재 번호 대조", "tags": ["오류", "번호"], "summary": "부재 번호를 도면과 맞춘다."},
+        {"id": "r-n1", "label": "유닛 반입 순서표", "tags": ["조립", "유닛", "순서"], "summary": "현장 반입 순서를 공장과 맞춘다."},
+        {"id": "r-n2", "label": "유닛 번호 대조", "tags": ["오류", "설치", "위치"], "summary": "유닛 번호와 설치 위치를 도면과 맞춘다."},
     ],
     "edges": [{"id": "r-e1", "source": "r-n2", "target": "r-n1", "relation": "checks"}],
 }
-# relevance exactly τ = 0.20 (현장 exact tag: 1.0 / 5); distance 0 -> score 0.20
+# relevance exactly τ = 0.20 (현장 exact tag: 1.0 / 5); content distance 0 -> score 0.20
 CLOSE_AT_TAU = {
     "title": "기초 레벨 측정",
-    "domains": ["건축", "BIM"],
+    "domains": ["게임 디자인"],
     "nodes": [
-        {"id": "u-n1", "label": "레벨 측량 기록", "tags": ["현장", "측량"], "summary": "기초 높이를 매일 잰다."},
-        {"id": "u-n2", "label": "앵커 위치 확인", "tags": ["앵커"], "summary": "철판 구멍과 앵커를 맞춘다."},
+        {"id": "u-n1", "label": "기초 레벨 측량", "tags": ["현장", "유닛", "설치"], "summary": "유닛 설치 위치의 기초 높이를 잰다."},
+        {"id": "u-n2", "label": "앵커 위치 확인", "tags": ["위치", "순서"], "summary": "공장 도면과 앵커 위치를 맞춘다."},
     ],
     "edges": [{"id": "u-e1", "source": "u-n2", "target": "u-n1", "relation": "precedes"}],
 }
-# relevance 0.60 under QK (조립, 현장, 오류 exact tags: 3.0 / 5); distance 0 -> score 0.60
+# relevance 0.60 under QK (조립, 현장, 오류 exact tags: 3.0 / 5); content distance 0 -> score 0.60
 CLOSE_060 = {
     "title": "유닛 정렬 점검 메모",
-    "domains": ["건축", "BIM"],
+    "domains": ["게임 디자인"],
     "nodes": [
-        {"id": "z-n1", "label": "정렬 점검표", "tags": ["조립", "현장"], "summary": "놓을 때마다 기준선을 본다."},
-        {"id": "z-n2", "label": "불일치 기록", "tags": ["오류", "기록"], "summary": "틀어진 값을 바로 적는다."},
+        {"id": "z-n1", "label": "유닛 정렬 점검표", "tags": ["조립", "현장", "유닛"], "summary": "유닛을 놓을 때마다 설치 기준선을 본다."},
+        {"id": "z-n2", "label": "위치 불일치 기록", "tags": ["오류", "위치"], "summary": "틀어진 위치와 순서를 바로 적는다."},
     ],
     "edges": [{"id": "z-e1", "source": "z-n2", "target": "z-n1", "relation": "feeds"}],
 }
@@ -109,17 +122,15 @@ def _v(doc: dict, sid: str, owner: str | None = None):
     return version_from_doc(doc, subbrain_id=sid, owner_id=owner or f"user_{sid.lower()}")
 
 
-def _ref_distance(host_doc: dict, cand_doc: dict) -> float:
-    """1 - Jaccard of normalized domains (matching stub docstring), computed independently."""
-    a = {normalize(d) for d in host_doc["domains"]}
-    b = {normalize(d) for d in cand_doc["domains"]}
-    return 1.0 - len(a & b) / len(a | b)
+def _ref_distance(host_doc: dict, cand_doc: dict, cfg) -> float:
+    """v.6 MUST-M5 content distance by the independent reference (_v6.reference_distance)."""
+    return reference_distance(host_doc, cand_doc, cfg.matching)
 
 
 def _ref(terms: list[str], doc: dict, cfg) -> tuple[float, float, float]:
     """(relevance, distance, score) by the frozen formulas; relevance capped at 1 (stub: relevance in [0,1])."""
     rel = min(1.0, reference_relevance(terms, doc, cfg.matching)[0])
-    dist = _ref_distance(load_brain("A")["document"], doc)
+    dist = _ref_distance(load_brain("A")["document"], doc, cfg)
     score = rel + cfg.matching.distance_bonus * dist if rel >= cfg.matching.tau else 0.0
     return rel, dist, score
 
@@ -174,25 +185,35 @@ def test_must_m2_v5_constructed_candidates_have_the_intended_values(cfg):
     m = cfg.matching
     assert tokenize(QK, josa_suffixes=m.josa_suffixes, min_stem=m.josa_min_stem_length, stopwords=m.stopwords) == QK_TERMS
     host = load_brain("A")["document"]
-    expect = {  # name: (doc, relevance under QK, distance from A)
-        "CLOSE_040": (CLOSE_040, 0.40, 0.0),
-        "MID_040": (MID_040, 0.40, 2 / 3),
-        "CLOSE_050": (CLOSE_050, 0.50, 0.0),
-        "CLOSE_060": (CLOSE_060, 0.60, 0.0),
-        "CLOSE_AT_TAU": (CLOSE_AT_TAU, 0.20, 0.0),
-        "AT_TAU_FAR": (AT_TAU_DOC, 0.20, 1.0),
-        "B": (load_brain("B")["document"], 0.40, 1.0),
-        "H": (host, 1.00, 0.0),
-        **{n: (WEAK_DOCS[n], v, 1.0) for n, v in WEAK_QK.items()},
+    # v.6: distances are MUST-M5 content distances (reference in _v6.py); ranges where the exact value is incidental.
+    expect = {  # name: (doc, relevance under QK, distance from A as (low, high))
+        "CLOSE_040": (CLOSE_040, 0.40, (0.0, 0.0)),
+        "MID_040": (MID_040, 0.40, (0.15, 0.30)),
+        "CLOSE_050": (CLOSE_050, 0.50, (0.0, 0.0)),
+        "CLOSE_060": (CLOSE_060, 0.60, (0.0, 0.0)),
+        "CLOSE_AT_TAU": (CLOSE_AT_TAU, 0.20, (0.0, 0.0)),
+        "AT_TAU_FAR": (AT_TAU_DOC, 0.20, (0.5, 0.6)),  # >= far_distance
+        "B": (load_brain("B")["document"], 0.40, (0.75, 0.76)),
+        "H": (host, 1.00, (0.0, 0.0)),
+        "W_LABEL": (WEAK_DOCS["W_LABEL"], WEAK_QK["W_LABEL"], (0.8, 0.85)),
+        "W_SUB": (WEAK_DOCS["W_SUB"], WEAK_QK["W_SUB"], (0.75, 0.8)),
+        "W_TWO": (WEAK_DOCS["W_TWO"], WEAK_QK["W_TWO"], (1.0, 1.0)),
     }
-    for name, (doc, rel, dist) in expect.items():
+    for name, (doc, rel, (lo, hi)) in expect.items():
         assert reference_relevance(QK_TERMS, doc, m)[0] == pytest.approx(rel), name
-        assert _ref_distance(host, doc) == pytest.approx(dist), name
+        assert lo - 1e-12 <= _ref_distance(host, doc, cfg) <= hi + 1e-12, (name, _ref_distance(host, doc, cfg))
         if name not in ("B", "H"):  # B, H: any title hit is also a tag hit (weight 1.0 already)
             words = {t for text in (doc["title"], *doc["domains"]) for t in tokenize(text)}
             assert not [t for t in QK_TERMS if any(t in w for w in words)], f"{name}: a QK term in title/domains"
-    # Exact float tie used below: 0.50 + 0.3 * 0 == 0.20 + 0.3 * 1.0
+    # The content-close candidates declare a field the host does not have (v.5 domain distance would call them far).
+    for doc in (CLOSE_040, CLOSE_050, CLOSE_060, CLOSE_AT_TAU):
+        assert not set(doc["domains"]) & set(host["domains"])
+    # Exact float tie used below (QT): 0.50 + 0.3 * 0 == 0.20 + 0.3 * 1.0
     assert 2.5 / 5 + BONUS * 0.0 == 1.0 / 5 + BONUS * 1.0
+    qt = tokenize(QT, josa_suffixes=m.josa_suffixes, min_stem=m.josa_min_stem_length, stopwords=m.stopwords)
+    assert reference_relevance(qt, CLOSE_050, m)[0] == pytest.approx(0.50)
+    assert reference_relevance(qt, T_FAR, m)[0] == pytest.approx(0.20)
+    assert _ref_distance(host, CLOSE_050, cfg) == 0.0 and _ref_distance(host, T_FAR, cfg) == 1.0
 
 
 def test_must_m1_relevance_fields_are_node_tags_labels_and_summaries_only(cfg):
@@ -237,12 +258,13 @@ def test_must_m2_v5_score_field_on_q01_matches_the_formula(cfg):
     for fid in ("A2", "B", "C", "D", "X"):
         rel, dist, score = _ref(Q01_TERMS, load_brain(fid)["document"], cfg)
         c = by_id[fixture_sid(fid)]
-        assert c.relevance == pytest.approx(rel), fid
-        assert c.distance == pytest.approx(dist), fid
-        assert c.score == pytest.approx(score), fid
-    assert by_id[fixture_sid("B")].score == pytest.approx(0.70)
-    assert by_id[fixture_sid("C")].score == pytest.approx(0.70)
-    assert by_id[fixture_sid("A2")].score == pytest.approx(0.56)
+        assert c.relevance == pytest.approx(rel, abs=DISPLAY_TOL), fid
+        assert c.distance == pytest.approx(dist, abs=DISPLAY_TOL), fid
+        assert c.score == pytest.approx(score, abs=DISPLAY_TOL), fid
+    # v.6 (MUST-M5): B 0.40 + 0.3 × 0.7532, C 0.40 + 0.3 × 0.8131 (§9: "B·C(거리 약 0.75·0.81)"), A2 0.56 + 0.3 × 0
+    assert by_id[fixture_sid("B")].score == pytest.approx(0.6260, abs=DISPLAY_TOL)
+    assert by_id[fixture_sid("C")].score == pytest.approx(0.6439, abs=DISPLAY_TOL)
+    assert by_id[fixture_sid("A2")].score == pytest.approx(0.56, abs=DISPLAY_TOL)
     assert by_id[fixture_sid("D")].score == 0.0 and by_id[fixture_sid("X")].score == 0.0
 
 
@@ -255,19 +277,23 @@ def test_must_m2_v5_q01_ranks_b_and_c_above_a2(cfg):
     one = _match(Q01, _fixtures(), cfg, max_members=1)
     two = _match(Q01, _fixtures(), cfg, max_members=2)
     three = _match(Q01, _fixtures(), cfg, max_members=3)
-    assert _selected(two) == {fixture_sid("B"), fixture_sid("C")}, "B·C (0.70) rank above A2 (0.56)"
+    assert _selected(two) == {fixture_sid("B"), fixture_sid("C")}, "B (0.626)·C (0.644) rank above A2 (0.56)"
     assert two.truncated is True
-    assert _selected(one) == {fixture_sid("B")}, "B and C tie on score and relevance -> subbrain_id ascending"
+    # v.6: C's content is farther from A than B's (§9: 0.81 vs 0.75) and the relevance is equal -> C first.
+    assert _selected(one) == {fixture_sid("C")}, "equal relevance, C farther by content -> C ranks first"
     assert one.truncated is True
     assert _selected(three) == {fixture_sid("A2"), fixture_sid("B"), fixture_sid("C")}
     assert three.truncated is False
 
 
 def test_must_m2_v5_full_tie_is_broken_by_subbrain_id_ascending(cfg):
-    c_first = fixture_version("C", subbrain_id="sb_0C")  # sorts before sb_B
-    cands = [fixture_version("A2"), fixture_version("B"), c_first]
+    # v.6: B and C no longer tie (content distances differ), so the full tie uses two copies of C's content owned by
+    # different users: same relevance, same content distance, same score -> subbrain_id ascending.
+    c_first = fixture_version("C", subbrain_id="sb_0C", owner_id="user_c0")  # sorts before sb_C
+    cands = [fixture_version("A2"), fixture_version("B"), fixture_version("C"), c_first]
     assert _selected(_match(Q01, cands, cfg, max_members=1)) == {"sb_0C"}
     assert _selected(_match(Q01, list(reversed(cands)), cfg, max_members=1)) == {"sb_0C"}
+    assert _selected(_match(Q01, cands, cfg, max_members=2)) == {"sb_0C", fixture_sid("C")}
 
 
 def test_must_m2_v5_equal_relevance_farther_field_ranks_higher(cfg):
@@ -278,15 +304,20 @@ def test_must_m2_v5_equal_relevance_farther_field_ranks_higher(cfg):
     for c in (close, mid, far):
         assert reference_relevance(QK_TERMS, c.document.model_dump(), cfg.matching)[0] == pytest.approx(0.40)
 
+    # v.6 (MUST-M5) content distances from A: close 0, mid ≈ 0.21, B ≈ 0.75 (self-checked against the reference).
+    host = load_brain("A")["document"]
+    d_close, d_mid, d_far = (_ref_distance(host, c.document.model_dump(), cfg) for c in (close, mid, far))
+    assert d_close == 0.0 < d_mid < cfg.matching.far_distance <= d_far < 1.0
+
     r1 = _match(QK, [close, mid, far], cfg, max_members=1)
     assert all(c.relevance == pytest.approx(0.40) for c in r1.candidates)
-    assert _selected(r1) == {fixture_sid("B")}, "distance 1.0 beats 2/3 and 0 at equal relevance"
+    assert _selected(r1) == {fixture_sid("B")}, "the farthest content (B) beats mid and close at equal relevance"
     r2 = _match(QK, [close, mid, far], cfg, max_members=2)
     assert _selected(r2) == {fixture_sid("B"), "sb_1mid"}
     r3 = _match(QK, [close, mid], cfg, max_members=1)
-    assert _selected(r3) == {"sb_1mid"}, "distance 2/3 beats 0 at equal relevance (forbidden: closer field above)"
+    assert _selected(r3) == {"sb_1mid"}, "mid beats close at equal relevance (forbidden: closer field above)"
     by_id = _by_id(r2)
-    assert by_id["sb_1mid"].score == pytest.approx(0.40 + BONUS * 2 / 3)
+    assert by_id["sb_1mid"].score == pytest.approx(0.40 + BONUS * d_mid, abs=DISPLAY_TOL)
     assert by_id[fixture_sid("B")].score > by_id["sb_1mid"].score > by_id["sb_0close"].score
     _assert_scores(r2, cfg)
 
@@ -294,12 +325,16 @@ def test_must_m2_v5_equal_relevance_farther_field_ranks_higher(cfg):
 def test_must_m2_v5_equal_score_is_broken_by_relevance_before_subbrain_id(cfg):
     """R (0.50, d0) and T (0.20, d1) both score exactly 0.50; T's id sorts first, R must still win (relevance).
 
-    B (0.70, d1) is present so the diversity guarantee is already met and cannot swap T in.
+    B (0.40 + 0.3 × 0.75 ≈ 0.63, far) is present so the diversity guarantee is already met and cannot swap T in.
+    v.6: under QK every matching word is also a word of A, so no candidate can be at content distance exactly 1.0;
+    the query is QT (two terms A does not have) and T is T_FAR, which shares no word with A (distance exactly 1.0)
+    while declaring A's own domains.
     """
     r = _v(CLOSE_050, "sb_R")
-    t = _v(AT_TAU_DOC, "sb_0T")
-    result = _match(QK, [t, r, fixture_version("B")], cfg, max_members=2)
+    t = _v(T_FAR, "sb_0T")
+    result = _match(QT, [t, r, fixture_version("B")], cfg, max_members=2)
     by_id = _by_id(result)
+    assert by_id["sb_R"].distance == 0.0 and by_id["sb_0T"].distance == 1.0
     assert by_id["sb_R"].score == pytest.approx(0.50) and by_id["sb_0T"].score == pytest.approx(0.50)
     assert _selected(result) == {fixture_sid("B"), "sb_R"}
 
@@ -311,11 +346,13 @@ def test_must_m2_v5_equal_score_is_broken_by_relevance_before_subbrain_id(cfg):
 
 @pytest.mark.parametrize("max_members", [1, 3, 10])
 def test_must_m2_v5_below_tau_distant_candidate_never_selected_even_if_its_score_would_win(cfg, max_members):
-    eligible = _v(CLOSE_AT_TAU, "sb_U")  # 0.20, distance 0 -> score 0.20
-    weak = [_v(WEAK_DOCS[n], f"sb_{n}") for n in sorted(WEAK_QK)]  # 0.10..0.18 under QK, distance 1.0
-    # self-check: with the bonus, every weak candidate's would-be score beats the eligible one
+    eligible = _v(CLOSE_AT_TAU, "sb_U")  # 0.20, content distance 0 -> score 0.20
+    weak = [_v(WEAK_DOCS[n], f"sb_{n}") for n in sorted(WEAK_QK)]  # 0.10..0.18 under QK, content-far from A
+    # self-check: with the bonus, every weak candidate's would-be score beats the eligible one (v.6 content distances)
+    host = load_brain("A")["document"]
+    assert _ref_distance(host, CLOSE_AT_TAU, cfg) == 0.0
     for n, rel in WEAK_QK.items():
-        assert rel + BONUS * 1.0 > 0.20
+        assert rel + BONUS * _ref_distance(host, WEAK_DOCS[n], cfg) > 0.20, n
     result = _match(QK, [*weak, eligible], cfg, max_members=max_members)
     assert result.strategy == DEFAULT
     assert _selected(result) == {"sb_U"}, f"selected {_selected(result)}"
@@ -365,13 +402,18 @@ def test_must_m2_v5_never_selects_below_tau(cfg, strategy, query, max_members):
 
 
 def test_must_m2_v5_diversity_guarantee_still_applies(cfg):
-    """H (1.00, d0), Z (0.60, d0), T (0.20, d1 -> 0.50) under QK: score order alone picks only close candidates."""
+    """H (1.00, d0), Z (0.60, d0), T (0.20, d≈0.56 -> ≈0.37) under QK: score order alone picks only close candidates.
+
+    v.6: "far" is content distance >= far_distance (config, 0.5); T's content distance from A is ≈ 0.56.
+    """
     h = fixture_version("A", subbrain_id="sb_H", owner_id="user_h")  # host-like doc of another user
     z = _v(CLOSE_060, "sb_Z")
     t = _v(AT_TAU_DOC, "sb_T")
+    host = load_brain("A")["document"]
+    assert _ref_distance(host, CLOSE_060, cfg) < cfg.matching.far_distance <= _ref_distance(host, AT_TAU_DOC, cfg)
     cands = [h, z, t]
     two = _match(QK, cands, cfg, max_members=2)
-    assert "sb_T" in _selected(two), "an eligible candidate sharing no domain with the host must be included"
+    assert "sb_T" in _selected(two), "an eligible candidate at distance >= far_distance must be included"
     assert "sb_H" in _selected(two), "the swap replaces the lowest-ranked selected member, not the top one"
     assert len(_selected(two)) == 2
     one = _match(QK, cands, cfg, max_members=1)
@@ -404,7 +446,7 @@ def test_must_m2_v5_q02_keeps_a2_first(cfg):
     # independent recomputation from the terms the matcher reports it used (host terms, MUST-M3)
     ref = {fid: _ref(result.query_terms, load_brain(fid)["document"], cfg) for fid in ("B", "C")}
     for fid, (_, _, score) in ref.items():
-        assert by_id[fixture_sid(fid)].score == pytest.approx(score), fid
+        assert by_id[fixture_sid(fid)].score == pytest.approx(score, abs=DISPLAY_TOL), fid  # v.6: display rounding
         assert score < 1.0
     best_far = sorted(("B", "C"), key=lambda f: (-ref[f][2], -ref[f][0], fixture_sid(f)))[0]  # MUST-M2 order
     assert _selected(result) == {fixture_sid("A2"), fixture_sid(best_far)}, "A2 first, then the best far candidate"
@@ -424,8 +466,10 @@ def test_must_m2_v5_distance_bonus_is_read_from_config(cfg):
     small = cfg.matching.model_copy(update={"distance_bonus": 0.1})
     r_small = _match(Q01, _fixtures(), cfg, max_members=2, mcfg=small)
     assert r_small.strategy == DEFAULT
-    assert _selected(r_small) == {fixture_sid("A2"), fixture_sid("B")}, "0.56 > 0.40 + 0.1; B wins the B/C tie"
-    assert _by_id(r_small)[fixture_sid("B")].score == pytest.approx(0.50)
+    # v.6: 0.56 > 0.40 + 0.1 × d; C (d ≈ 0.81) beats B (d ≈ 0.75) at equal relevance
+    assert _selected(r_small) == {fixture_sid("A2"), fixture_sid("C")}, "0.56 > 0.40 + 0.1 × d; C is farther than B"
+    d_c = _ref_distance(load_brain("A")["document"], load_brain("C")["document"], cfg)
+    assert _by_id(r_small)[fixture_sid("C")].score == pytest.approx(0.40 + 0.1 * d_c, abs=DISPLAY_TOL)
     _assert_scores(r_small, cfg, bonus=0.1)
     r_default = _match(Q01, _fixtures(), cfg, max_members=2)
     assert _selected(r_default) == {fixture_sid("B"), fixture_sid("C")}
@@ -492,8 +536,9 @@ def test_must_m2_v5_match_explain_exposes_score(seeded: World):
             assert c["score"] == pytest.approx(c["relevance"] + bonus * c["distance"], abs=DISPLAY_TOL), c
         else:
             assert c["score"] == 0.0, c
-    assert cands[seeded.sid("B")]["score"] == pytest.approx(0.70)
-    assert cands[seeded.sid("A2")]["score"] == pytest.approx(0.56)
+    # v.6 (MUST-M5): B = 0.40 + 0.3 × 0.7532 ≈ 0.6260 (content distance), no longer 0.70 (domain distance 1.0)
+    assert cands[seeded.sid("B")]["score"] == pytest.approx(0.6260, abs=DISPLAY_TOL)
+    assert cands[seeded.sid("A2")]["score"] == pytest.approx(0.56, abs=DISPLAY_TOL)
     assert find_dicts(env, lambda d: d.get("strategy") == DEFAULT), "match_explain reports the strategy used"
 
 

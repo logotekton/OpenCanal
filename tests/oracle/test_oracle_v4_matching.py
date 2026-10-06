@@ -155,17 +155,25 @@ def test_must_m1_v4_below_tau_never_selected_by_match(cfg, strategy, max_members
 
 
 def test_must_m1_v4_diversity_swap_never_brings_in_a_below_tau_candidate(cfg):
-    """A2 is domain-close (distance 0); every weak candidate is domain-distant (distance 1.0) but below τ.
+    """A2 is close (distance 0); every weak candidate is far but below τ.
 
-    relevance_plus_diversity may swap in a distance-1.0 candidate only if its relevance >= τ (stub docstring).
+    relevance_plus_diversity may swap in a far candidate only if its relevance >= τ (stub docstring).
+    Oracle v.6 (MUST-M5): distances are content distances — A2 0, the weak candidates ≈0.78..1.0 (all >= far_distance,
+    W_TWO exactly 1.0) — not domain distances.
     """
+    from ._v6 import reference_distance
+
+    host = fixture_version("A").document.model_dump()
     weak = [_weak_version(n) for n in sorted(WEAK_DOCS)]
     for max_members in (1, 2):
         result = _match(Q01, [fixture_version("A2"), *weak], cfg, max_members=max_members, strategy="relevance_plus_diversity")
         by_id = {c.subbrain_id: c for c in result.candidates}
         assert by_id[fixture_sid("A2")].distance == pytest.approx(0.0)
         for name in WEAK_DOCS:
-            assert by_id[f"sb_{name}"].distance == pytest.approx(1.0), "self-check: weak candidates are domain-distant"
+            ref = reference_distance(host, WEAK_DOCS[name], cfg.matching)
+            assert ref >= cfg.matching.far_distance, "self-check: weak candidates are content-far"
+            assert by_id[f"sb_{name}"].distance == pytest.approx(ref, abs=1e-3), name
+        assert by_id["sb_W_TWO"].distance == pytest.approx(1.0)
         assert {c.subbrain_id for c in result.candidates if c.selected} == {fixture_sid("A2")}
 
 

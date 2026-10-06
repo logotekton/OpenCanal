@@ -9,6 +9,8 @@ default data/keys/master.key), --config-dir (env OPENCANAL_CONFIG_DIR, default c
 defaults resolve against the repository root, so the same DB is used from any working directory.
 Plaintext MCP tokens are printed once, when created; only their hashes are stored.
 Directories created for data, keys and backups are 0700; DB, key and backup files are 0600 (MUST-E1, MUST-E3).
+backup writes no plaintext copy of the DB to disk; restore's plaintext temp file is 0600 and is removed on success
+and on failure (MUST-E3 v.6).
 """
 
 from __future__ import annotations
@@ -371,14 +373,31 @@ def _find_candidates(envelope: dict[str, Any]) -> list[dict[str, Any]]:
     return [c for c in found if isinstance(c, dict)] if isinstance(found, list) else []
 
 
-def _in_rank_order(candidates: list[dict[str, Any]], strategy: Any) -> list[dict[str, Any]]:
-    """Candidate rows in the strategy's ranking (MUST-M2: by score). The envelope lists them in relevance order."""
+def _in_rank_order(candidates: list[dict[str, Any]], strategy: Any, ranking: Any = None) -> list[dict[str, Any]]:
+    """Candidate rows in the strategy's ranking (MUST-M2: by score). The envelope lists them in relevance order.
+
+    The server's `ranking` is the exact order (v.6: unrounded values) and wins when it lists exactly these
+    candidates. Without it, the rows are sorted by their rounded fields, which can tie where the exact values do not.
+    """
+    if isinstance(ranking, list):
+        position = {}
+        for i, entry in enumerate(ranking):
+            if isinstance(entry, dict):
+                position.setdefault((entry.get("subbrain_id"), entry.get("version")), i)
+        keys = [(c.get("subbrain_id"), c.get("version")) for c in candidates]
+        if len(position) == len(ranking) == len(candidates) and set(keys) == set(position):
+            return sorted(candidates, key=lambda c: position[(c.get("subbrain_id"), c.get("version"))])
     try:
         parsed = [MatchCandidate.model_validate(c) for c in candidates]
     except ValidationError:
         return candidates  # unexpected shape: keep the server's order
     rows = {id(m): c for m, c in zip(parsed, candidates)}
     return [rows[id(m)] for m in matching.in_rank_order(parsed, str(strategy or ""))]
+
+
+def _shown_number(value: Any) -> Any:
+    """A relevance/distance/score cell at the precision the server rounds to for display (v.6)."""
+    return f"{value:.{matching.DISPLAY_DECIMALS}f}" if isinstance(value, float) else value
 
 
 def cmd_match_explain(args: argparse.Namespace) -> int:
@@ -398,7 +417,7 @@ def cmd_match_explain(args: argparse.Namespace) -> int:
     for key in ("host_subbrain_id", "host_version", "query_mode_used", "strategy", "tau", "max_members", "query_terms", "truncated"):
         value = _pick(envelope, key)
         if value is not None:
-            print(f"{key}: {_clean_cell(value)}")
+            print(f"{key}: {_clean_cell(_shown_number(value))}")
     candidates = _find_candidates(envelope)
     # Titles and owner names are other users' text: they arrive under untrusted_data and are only displayed.
     untrusted = envelope.get("untrusted_data") if isinstance(envelope.get("untrusted_data"), dict) else {}
@@ -408,7 +427,8 @@ def cmd_match_explain(args: argparse.Namespace) -> int:
             about[(entry.get("subbrain_id"), entry.get("version"))] = entry
             about.setdefault((entry.get("subbrain_id"), None), entry)
     rows = []
-    for rank, c in enumerate(_in_rank_order(candidates, _pick(envelope, "strategy")), start=1):
+    ranked = _in_rank_order(candidates, _pick(envelope, "strategy"), envelope.get("ranking"))
+    for rank, c in enumerate(ranked, start=1):
         info = about.get((c.get("subbrain_id"), c.get("version"))) or about.get((c.get("subbrain_id"), None)) or {}
         display = c.get("owner_display") or info.get("owner_display")
         owner_id = c.get("owner_id", "")
@@ -418,9 +438,9 @@ def cmd_match_explain(args: argparse.Namespace) -> int:
                 f"{c.get('subbrain_id', '')}@v{c.get('version', '')}",
                 c.get("title") or info.get("title", ""),
                 f"{display} ({owner_id})" if display else owner_id,
-                c.get("relevance"),
-                c.get("distance"),
-                c.get("score"),
+                _shown_number(c.get("relevance")),
+                _shown_number(c.get("distance")),
+                _shown_number(c.get("score")),
                 c.get("matched_terms", []),
                 "yes" if c.get("selected") else "no",
                 c.get("reason", ""),
@@ -521,6 +541,8 @@ def _restore_db_file(target: Path, data: bytes) -> None:
 
     The image goes to a private temp file next to the target first; it is linked into place only after
     it is complete, flushed and passes SQLite's quick_check. Only that temp file is ever removed.
+    MUST-E3 (v.6): the temp file is 0600 from creation (Store.restore_bytes stages it with mkstemp, so the umask
+    cannot widen it), the read-only immutable check creates no sidecar, and `finally` removes it on every path.
     """
     temp = target.parent / f".{target.name}.restore-{secrets.token_hex(8)}.tmp"
     try:

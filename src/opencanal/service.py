@@ -239,9 +239,10 @@ _TOOL_DEFS: tuple[_ToolDef, ...] = (
     ),
     _ToolDef(
         "match_explain",
-        "커널을 열지 않고 매칭 결과를 자세히 본다. 후보마다 관련도, 도메인 거리, 겹친 용어를 τ 미만까지 모두 보여준다. 횟수 차감 없음. "
-        "호스트는 내 서브브레인이면 공개 여부와 무관하다. / Inspect matching without opening a canal: relevance, domain distance "
-        "and matched terms for every candidate, including those below tau. Nothing is counted; the host may be any of your subbrains.",
+        "커널을 열지 않고 매칭 결과를 자세히 본다. 후보마다 관련도, 내용 거리, 점수, 겹친 용어를 τ 미만까지 모두 보여주고, "
+        "전략의 순위를 ranking에 담는다. 횟수 차감 없음. 호스트는 내 서브브레인이면 공개 여부와 무관하다. "
+        "/ Inspect matching without opening a canal: relevance, content distance, score and matched terms for every candidate, "
+        "including those below tau, plus the strategy's ranking. Nothing is counted; the host may be any of your subbrains.",
         MatchInspectArgs,
         "_match_explain",
     ),
@@ -560,25 +561,29 @@ class Service:
                 if sv.visibility != Visibility.PUBLIC:
                     continue
                 relevance, matched = matching.score_relevance(terms, sv, cfg)
-                if relevance < cfg.tau:
+                if relevance < cfg.tau:  # unrounded (MUST-M2 v.6)
                     continue
                 results.append(
-                    {
-                        "subbrain_id": sv.subbrain_id,
-                        "version": sv.version,
-                        "title": sv.document.title,
-                        "domains": list(sv.document.domains),
-                        "owner_display": sv.owner_display,
-                        "relevance": relevance,
-                        "matched_terms": list(matched),
-                    }
+                    (
+                        relevance,
+                        {
+                            "subbrain_id": sv.subbrain_id,
+                            "version": sv.version,
+                            "title": sv.document.title,
+                            "domains": list(sv.document.domains),
+                            "owner_display": sv.owner_display,
+                            "relevance": matching.display_value(relevance),  # rounded only for display (v.6)
+                            "matched_terms": list(matched),
+                        },
+                    )
                 )
-        results.sort(key=lambda r: (-r["relevance"], r["subbrain_id"]))
+        results.sort(key=lambda r: (-r[0], r[1]["subbrain_id"]))
+        shown = [row for _, row in results[: a.limit]]
         return {
             "ok": True,
             "query_terms": terms,
             "tau": cfg.tau,
-            "untrusted_data": _untrusted(results=results[: a.limit]),
+            "untrusted_data": _untrusted(results=shown),
         }
 
     # -- canals ------------------------------------------------------------
@@ -599,16 +604,19 @@ class Service:
             )
         candidates = self._candidates(user)
         cfg = self._config.matching
-        result = matching.match(
+        result, ranking = matching.match_with_ranking(
             a.query, host, candidates, max_members=limits.max_members_per_canal, cfg=cfg, query_mode=a.query_mode
         )
         by_key = {(sv.subbrain_id, sv.version): sv for sv in candidates}
         # Members are listed in the strategy's ranking (MUST-M2: by score), not in the relevance order of
-        # result.candidates; with nothing truncated, this order is the only place the ranking shows.
+        # result.candidates; with nothing truncated, this order is the only place the ranking shows. The ranking is
+        # the exact one match() selected by (v.6: unrounded), and match() never selects below τ, also compared
+        # unrounded. Re-checking the rounded c.relevance against τ here could drop a member selected at e.g. 1/3
+        # when τ = 0.33333, and sorting the rounded fields could reorder members whose scores round alike.
         selected = [
             (c, by_key[(c.subbrain_id, c.version)])
-            for c in matching.in_rank_order(result.candidates, result.strategy)
-            if c.selected and c.relevance >= result.tau and (c.subbrain_id, c.version) in by_key
+            for c in ranking
+            if c.selected and (c.subbrain_id, c.version) in by_key
         ]
         if not selected:
             raise _err(
@@ -672,8 +680,9 @@ class Service:
             if host_sv is not None
             else _withheld(self._store.withheld_ref(canal.id, canal.host_subbrain_id))
         )
-        # Member scores are derived from the host too: distance from the host's domains, and in whole_host mode the
-        # terms (so relevance and matched_terms) are the host's own tags and labels. A withheld host hides those.
+        # Member scores are derived from the host too: the content distance from the host's labels, tags and summaries
+        # (MUST-M5), and in whole_host mode the terms (so relevance and matched_terms) are the host's own tags and
+        # labels. A withheld host hides those.
         host_derived: set[str] = set()
         if host_sv is None:
             host_derived = {"distance"}
@@ -706,7 +715,9 @@ class Service:
             else:
                 visible.sort(key=lambda v: (-v[0].relevance, v[0].subbrain_id))
         # With the host shown, every input of the stored rank (relevance, distance, id, version) of a visible member
-        # is shown too, so the stored relative order of visible members tells this viewer nothing more.
+        # is shown too (scores rounded for display, v.6), so the stored relative order of visible members adds at
+        # most which of two visible members ranks higher when their shown values round alike: nothing about anyone
+        # withheld, whose entries come after the visible ones in ref order.
         withheld_refs.sort()
         members = [member for _, member, _ in visible] + [_withheld(ref) for ref in withheld_refs]
         entries = [entry for _, _, entry in visible] + [_withheld(ref) for ref in withheld_refs]
@@ -833,7 +844,7 @@ class Service:
         host = self._host_version(user, a.host_subbrain_id, require_public=False)
         limits = self._limits(user)
         candidates = self._candidates(user)
-        result = matching.match(
+        result, ranking = matching.match_with_ranking(
             a.query, host, candidates, max_members=limits.max_members_per_canal, cfg=self._config.matching,
             query_mode=a.query_mode,
         )
@@ -843,6 +854,9 @@ class Service:
             "host_version": host.version,
             "max_members": limits.max_members_per_canal,
             **result.model_dump(mode="json"),
+            # candidates stay in relevance order (models.py). The strategy's exact ranking (v.6: by unrounded values)
+            # can differ from sorting the rounded fields when two scores round alike, so it is given as is.
+            "ranking": [{"subbrain_id": c.subbrain_id, "version": c.version} for c in ranking],
             "untrusted_data": _untrusted(
                 subbrains=[
                     {

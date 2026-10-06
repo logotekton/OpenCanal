@@ -11,6 +11,8 @@ Every write runs in one BEGIN IMMEDIATE transaction (`_write_txn`), so a count-t
 monthly canal limit or the public subbrain limit is atomic across processes sharing the DB file (TIER-1).
 
 MUST-E3 (v.5): the DB file and its -wal/-shm/-journal sidecars are 0600, the directory created for them 0700.
+MUST-E3 (v.6): snapshot_bytes writes no plaintext copy to disk; restore_bytes stages the image in a 0600 temp file
+that is removed on success and on failure.
 """
 
 from __future__ import annotations
@@ -63,6 +65,11 @@ USER_ID_TOO_LONG_MESSAGE = (
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 # Files SQLite treats as part of the database at <db>: a stale one is replayed into a restored image (CRY-1).
 _SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
+# Header bytes 18/19 of a DB image: file format write/read version, 1 = rollback journal, 2 = WAL.
+_WAL_HEADER_VERSION = b"\x02\x02"
+_ROLLBACK_HEADER_VERSION = b"\x01\x01"
+# Connection.serialize() exists only when Python's SQLite has the serialize API (built in by default since 3.36).
+_CAN_SERIALIZE = hasattr(sqlite3.Connection, "serialize")
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 
@@ -287,6 +294,48 @@ def _prepare_db_file(db_path: Path) -> Path:
     for sidecar in _sidecars(path):
         _tighten_existing(sidecar)
     return path
+
+
+def _backup_in_memory(conn: sqlite3.Connection) -> bytes:
+    """Copy `conn`'s DB into a private in-memory DB and serialize it: no file is written (MUST-E3 v.6)."""
+    dest = sqlite3.connect(":memory:")
+    try:
+        conn.backup(dest)
+        return dest.serialize()
+    finally:
+        dest.close()
+
+
+def _backup_via_private_file(conn: sqlite3.Connection) -> bytes:
+    """Fallback for an SQLite without the serialize API (MUST-E3 v.6): the copy goes to a 0600 file in a fresh 0700
+    directory (mkdtemp), and the directory is removed with everything in it on success and on failure."""
+    with tempfile.TemporaryDirectory(prefix="opencanal-snap-") as tmp:
+        dest_path = os.path.join(tmp, "snapshot.db")
+        # Create the file before SQLite does: SQLite would create it 0644 under umask 022. Its -journal, made while
+        # the backup writes, takes the main file's mode.
+        fd = os.open(dest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_CLOEXEC, crypto.PRIVATE_FILE_MODE)
+        try:
+            os.fchmod(fd, crypto.PRIVATE_FILE_MODE)  # umask can only remove bits; pin the mode exactly
+        finally:
+            os.close(fd)
+        dest = sqlite3.connect(dest_path)  # an existing empty file is an empty DB; SQLite keeps its mode
+        try:
+            conn.backup(dest)
+        finally:
+            dest.close()
+        return Path(dest_path).read_bytes()
+
+
+def _self_contained_image(image: bytes) -> bytes:
+    """`image` with the rollback-journal version in its header instead of WAL.
+
+    The backup API copies page 1 as is, so the copy of a WAL-mode DB still says WAL: opening a file restored from it
+    would put SQLite in WAL mode and create -wal/-shm next to it. The copy already holds every committed page (the
+    backup reads through the WAL), so only these two bytes differ from a rollback-mode file; they are what
+    `PRAGMA journal_mode=DELETE` writes, and that pragma cannot be used on a memory DB."""
+    if image[18:20] == _WAL_HEADER_VERSION:
+        return image[:18] + _ROLLBACK_HEADER_VERSION + image[20:]
+    return image
 
 
 class Store:
@@ -1006,18 +1055,13 @@ class Store:
             self._audit_row(actor, action, target, detail)
 
     def snapshot_bytes(self) -> bytes:
-        """Consistent copy of the whole DB as bytes (sqlite backup API)."""
-        with self._lock, tempfile.TemporaryDirectory(prefix="opencanal-snap-") as tmp:
-            dest_path = os.path.join(tmp, "snapshot.db")
-            dest = sqlite3.connect(dest_path)
-            try:
-                self._conn.backup(dest)
-                # Make the copy self-contained (no -wal sidecar) before reading it back.
-                dest.execute("PRAGMA journal_mode=DELETE")
-                dest.commit()
-            finally:
-                dest.close()
-            return Path(dest_path).read_bytes()
+        """Consistent, self-contained copy of the whole DB as bytes (sqlite backup API).
+
+        MUST-E3 (v.6): the copy is made in memory, so no plaintext copy of the DB is written to disk. Only an SQLite
+        without the serialize API goes through a temp file, 0600 in a 0700 directory, removed whatever happens."""
+        with self._lock:
+            image = _backup_in_memory(self._conn) if _CAN_SERIALIZE else _backup_via_private_file(self._conn)
+        return _self_contained_image(image)
 
     @staticmethod
     def restore_bytes(db_path: Path | str, data: bytes) -> None:
@@ -1027,7 +1071,8 @@ class Store:
         <db>-journal) exists: SQLite would replay a stale sidecar on top of the restored image and silently
         bring back post-backup writes or corrupt it (CRY-1). The image goes to a temp file in the same directory,
         is fsynced, then hard-linked into place (never replaces an existing file), so a crash cannot leave a
-        partial DB at db_path."""
+        partial DB at db_path. The temp file is 0600 from creation (mkstemp, whatever the umask) and is removed on
+        success and on failure (MUST-E3 v.6)."""
         path = Path(db_path)
         for candidate in (path, *(path.with_name(path.name + suffix) for suffix in _SQLITE_SIDECARS)):
             if os.path.lexists(candidate):

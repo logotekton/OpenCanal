@@ -87,7 +87,7 @@ claude mcp add opencanal -e OPENCANAL_TOKEN=<token> -- /절대경로/opencanal/.
   --host-subbrain-id <subbrain_id> [--mode auto|topic|whole_host]
 ```
 
-τ 미만 후보까지 순위, 관련도, 거리, 점수(관련도 + `distance_bonus` × 거리, τ 미만은 0), 겹친 용어, 선택 여부, 이유를 표로 보여준다. 행은 쓰인 전략의 순위 순이다(기본 `relevance_with_distance_bonus`는 점수 순). 커널을 만들지 않고 사용량도 차감하지 않는다. `--token`을 생략하면 `OPENCANAL_TOKEN`을 쓴다.
+τ 미만 후보까지 순위, 관련도, 거리, 점수(관련도 + `distance_bonus` × 거리, τ 미만은 0), 겹친 용어, 선택 여부, 이유를 표로 보여준다. 거리는 호스트와 후보의 노드 라벨·태그·요약 낱말로 계산한 내용 거리다(0 가까움 ~ 1 멂). 신고한 분야와 제목은 거리에 쓰지 않는다. 행은 쓰인 전략의 순위 순이다(기본 `relevance_with_distance_bonus`는 점수 순). 순위와 τ 비교는 반올림하지 않은 값으로 하고, 표의 숫자는 소수 넷째 자리로 반올림해 보여 준다. 커널을 만들지 않고 사용량도 차감하지 않는다. `--token`을 생략하면 `OPENCANAL_TOKEN`을 쓴다.
 
 ### 백업과 복원
 
@@ -96,7 +96,7 @@ claude mcp add opencanal -e OPENCANAL_TOKEN=<token> -- /절대경로/opencanal/.
 .venv/bin/opencanal restore --in backups/opencanal-<UTC>.db.enc --db data/restored.db   # 이미 있는 파일은 덮어쓰지 않는다
 ```
 
-복원하려면 백업을 만든 마스터 키가 있어야 한다. 키 파일과 백업은 git에 넣지 않는다(`.gitignore`의 `data/`, `backups/`, `*.key`).
+복원하려면 백업을 만든 마스터 키가 있어야 한다. 키 파일과 백업은 git에 넣지 않는다(`.gitignore`의 `data/`, `backups/`, `*.key`). 백업은 평문 DB 사본을 메모리에서만 만든다(SQLite에 serialize가 없으면 0700 임시 디렉터리의 0600 파일을 쓰고 지운다). 복원은 대상 파일 옆에 0600 임시 파일을 잠깐 만들고 끝나면 지운다.
 
 ### 테스트
 

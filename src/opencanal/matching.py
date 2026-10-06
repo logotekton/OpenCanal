@@ -3,21 +3,35 @@
 Owner: Builder M. Pure functions over already-visible candidates (the store filters visibility).
 
 The default strategy is `relevance_with_distance_bonus` (ORACLE v.5 MUST-M2, owner decision "먼 분야에
-가산점"). The criterion may still change with the owner's research (D-003), so selection strategies stay
-pluggable (`STRATEGIES`) and every scoring decision can be explained term by term (`relevance_evidence`)
-and by its `score` for `match_explain`.
+가산점"). The distance it rewards is the content distance of MUST-M5 (v.6, owner decision "내용으로 계산"):
+term-frequency cosine over node labels, tags and summaries. Declared domains and the title never move it.
+The criterion may still change with the owner's research (D-003), so selection strategies stay pluggable
+(`STRATEGIES`) and every scoring decision can be explained term by term (`relevance_evidence`) and by its
+`score` for `match_explain`.
+
+Exactness (v.6 MUST-M2): ranking, τ and far_distance comparisons use unrounded values; MatchCandidate fields are
+rounded to DISPLAY_DECIMALS only for the response. Relevance and score are kept as exact fractions, with config
+numbers read as the decimals they are written as, so mathematically equal values compare equal (2.8 / 5 is 0.56, not
+0.5599999999999999) and the manifest's tie rules hold. The content distance comes from integer dot products (so it
+does not depend on iteration order) through the reduced fraction cos²: it is an exact fraction whenever the cosine is
+rational, and otherwise a float that depends on that fraction alone, so equal cosines give identical distances
+(`_distance_between` says why that is enough for every exact score tie).
 """
 
 from __future__ import annotations
 
+import math
+from collections import Counter
 from collections.abc import Callable, Iterable
-from typing import Literal, Optional, Protocol
+from dataclasses import dataclass
+from fractions import Fraction
+from typing import Literal, NamedTuple, Optional, Protocol, Union
 
 from pydantic import BaseModel
 
 from .config import MatchingConfig
 from .models import MatchCandidate, MatchResult, QueryMode, SubbrainVersion, Visibility
-from .textnorm import normalize, tokenize
+from .textnorm import tokenize
 
 # Candidate text fields, in tie-break order (first wins when two fields give the same weight).
 FIELDS: tuple[str, ...] = ("tags", "label", "summary")
@@ -31,12 +45,34 @@ REASON_DIVERSITY = "selected_diversity"
 REASON_DISPLACED = "displaced_by_diversity"
 REASON_NO_MATCH = "no_matched_terms"  # only reachable when tau <= 0: zero evidence is never selected
 
-MAX_DISTANCE = 1.0  # domain distance of a candidate that shares no domain with the host
+DISPLAY_DECIMALS = 4  # MatchCandidate relevance/distance/score are rounded to this for display only
+NO_CONTENT_DISTANCE = 1.0  # MUST-M5: distance when either side has no tokens, or they share none
+
+Number = Union[int, float, Fraction]
+
+
+def display_value(value: Number) -> float:
+    """A relevance/distance/score as shown in responses (v.6: round only for display)."""
+    return round(float(value), DISPLAY_DECIMALS)
+
+
+def _exact(value: Number) -> Fraction:
+    """A config number as the decimal it is written as: 0.8 -> 4/5, not the nearest binary float."""
+    return Fraction(str(value))
 
 
 # ---------------------------------------------------------------------------
 # Terms
 # ---------------------------------------------------------------------------
+
+
+def _tokenize(text: Optional[str], cfg: MatchingConfig, stopwords: Iterable[str] = ()) -> list[str]:
+    return tokenize(
+        text,
+        josa_suffixes=cfg.josa_suffixes,
+        min_stem=cfg.josa_min_stem_length,
+        stopwords=stopwords,
+    )
 
 
 def _tokens(texts: Iterable[Optional[str]], cfg: MatchingConfig, stopwords: Iterable[str] = ()) -> list[str]:
@@ -45,12 +81,7 @@ def _tokens(texts: Iterable[Optional[str]], cfg: MatchingConfig, stopwords: Iter
     seen: set[str] = set()
     out: list[str] = []
     for text in texts:
-        for token in tokenize(
-            text,
-            josa_suffixes=cfg.josa_suffixes,
-            min_stem=cfg.josa_min_stem_length,
-            stopwords=stop,
-        ):
+        for token in _tokenize(text, cfg, stop):
             if token not in seen:
                 seen.add(token)
                 out.append(token)
@@ -77,8 +108,8 @@ def candidate_fields(candidate: SubbrainVersion, cfg: MatchingConfig) -> dict[st
     summary = node summaries
 
     Only the nodes' tags, labels and summaries are relevance fields (stub docstring, config field_weights,
-    DECISIONS D-003 "태그·라벨·요약"). The document title and domains are not: domains already drive the distance,
-    and scoring them would lift exactly the close-field candidates the MUST-M2 bonus is meant to outrank.
+    DECISIONS D-003 "태그·라벨·요약"). The document title and domains are not, and they do not move the
+    content distance either (MUST-M5): a declared field never changes how a candidate ranks.
     """
     nodes = candidate.document.nodes
     return {
@@ -113,13 +144,17 @@ def _clean_terms(terms: Iterable[str]) -> list[str]:
     return out
 
 
-def _evidence_for_fields(terms: list[str], fields: dict[str, list[str]], cfg: MatchingConfig) -> list[TermEvidence]:
+def _evidence_exact(
+    terms: list[str], fields: dict[str, list[str]], cfg: MatchingConfig
+) -> list[tuple[TermEvidence, Fraction]]:
+    """Per term: the winning evidence and its exact weight (max over fields, first field wins a tie)."""
     field_sets = {name: set(tokens) for name, tokens in fields.items()}
-    out: list[TermEvidence] = []
+    factor = _exact(cfg.substring_match_factor)
+    out: list[tuple[TermEvidence, Fraction]] = []
     for term in terms:
-        best = TermEvidence(term=term, weight=0.0)
+        best, best_weight = TermEvidence(term=term, weight=0.0), Fraction(0)
         for name in FIELDS:
-            w = cfg.field_weights.get(name, 0.0)
+            w = _exact(cfg.field_weights.get(name, 0.0))
             if w <= 0:
                 continue
             if term in field_sets.get(name, ()):
@@ -128,50 +163,109 @@ def _evidence_for_fields(terms: list[str], fields: dict[str, list[str]], cfg: Ma
                 token = next((tok for tok in fields.get(name, ()) if term in tok), None)
                 if token is None:
                     continue
-                weight, kind = w * cfg.substring_match_factor, "substring"
+                weight, kind = w * factor, "substring"
             else:
                 continue
-            if weight > best.weight:
-                best = TermEvidence(term=term, weight=weight, field=name, match=kind, token=token)
-        out.append(best)
+            if weight > best_weight:
+                best_weight = weight
+                best = TermEvidence(term=term, weight=float(weight), field=name, match=kind, token=token)
+        out.append((best, best_weight))
     return out
+
+
+def _relevance_exact(weights: list[Fraction], cfg: MatchingConfig) -> Fraction:
+    if not weights:
+        return Fraction(0)
+    denominator = max(1, min(len(weights), cfg.denominator_cap))
+    return min(Fraction(1), sum(weights, Fraction(0)) / denominator)
+
+
+def _score_terms(terms: list[str], candidate: SubbrainVersion, cfg: MatchingConfig) -> tuple[Fraction, list[str]]:
+    evidence = _evidence_exact(terms, candidate_fields(candidate, cfg), cfg)
+    relevance = _relevance_exact([weight for _, weight in evidence], cfg)
+    return relevance, [e.term for e, weight in evidence if weight > 0]
 
 
 def relevance_evidence(terms: list[str], candidate: SubbrainVersion, cfg: MatchingConfig) -> list[TermEvidence]:
     """Per-term breakdown behind score_relevance (same order as the deduplicated terms)."""
-    return _evidence_for_fields(_clean_terms(terms), candidate_fields(candidate, cfg), cfg)
-
-
-def _relevance_from_evidence(evidence: list[TermEvidence], cfg: MatchingConfig) -> tuple[float, list[str]]:
-    if not evidence:
-        return 0.0, []
-    denominator = max(1, min(len(evidence), cfg.denominator_cap))
-    total = sum(e.weight for e in evidence)
-    relevance = round(min(1.0, total / denominator), 4)
-    return relevance, [e.term for e in evidence if e.weight > 0]
+    return [e for e, _ in _evidence_exact(_clean_terms(terms), candidate_fields(candidate, cfg), cfg)]
 
 
 def score_relevance(terms: list[str], candidate: SubbrainVersion, cfg: MatchingConfig) -> tuple[float, list[str]]:
-    """relevance in [0,1] and the matched terms.
+    """relevance in [0,1] (unrounded; round with display_value to show it) and the matched terms.
 
     per term t: weight = max over fields (tags, label, summary) of field_weights[field] if t equals a token
     of that field, else field_weights[field] * substring_match_factor if t (len>=2) is a substring of a token;
     relevance = sum(weights) / min(len(terms), denominator_cap). Empty terms -> 0.0.
     """
-    return _relevance_from_evidence(relevance_evidence(terms, candidate, cfg), cfg)
+    relevance, matched = _score_terms(_clean_terms(terms), candidate, cfg)
+    return float(relevance), matched
 
 
-def _domain_set(version: SubbrainVersion) -> set[str]:
-    return {d for d in (normalize(raw) for raw in version.document.domains) if d}
+# ---------------------------------------------------------------------------
+# Content distance (ORACLE v.6 MUST-M5)
+# ---------------------------------------------------------------------------
 
 
-def domain_distance(host: SubbrainVersion, candidate: SubbrainVersion) -> float:
-    """1 - Jaccard(normalized host domains, normalized candidate domains)."""
-    a, b = _domain_set(host), _domain_set(candidate)
-    union = a | b
-    if not union:
-        return MAX_DISTANCE
-    return round(1.0 - len(a & b) / len(union), 4)
+def _term_vector(version: SubbrainVersion, cfg: MatchingConfig) -> Counter[str]:
+    """Term frequencies over node labels, tags and summaries; title and domains are not content.
+
+    Each label, each tag and each summary is tokenized on its own (josa stripped, stopwords removed) and the
+    token lists are summed, so a term counts once per text it appears in.
+    """
+    vector: Counter[str] = Counter()
+    for node in version.document.nodes:
+        for text in (node.label, *node.tags, node.summary):
+            vector.update(_tokenize(text, cfg, cfg.stopwords))
+    return vector
+
+
+def _distance_between(
+    host_vector: Counter[str], candidate_vector: Counter[str], cfg: MatchingConfig
+) -> Union[Fraction, float]:
+    """1 - min(1, cosine / distance_saturation), from integer sums: independent of iteration order.
+
+    The cosine is taken from the reduced fraction cos² = dot² / (|H|²·|C|²), and saturation is tested on it exactly
+    (cos² >= saturation²). If cos is rational (numerator and denominator of cos² are perfect squares), the distance
+    is an exact Fraction. Otherwise it is a float computed from that reduced fraction alone, so mathematically equal
+    cosines (one vector a multiple of the other, or different vectors with the same cos²) give the identical float.
+
+    That covers every exact MUST-M2 score tie: scores r1 + b(1 - c1/s) and r2 + b(1 - c2/s) (c clamped to s,
+    0 when nothing is shared) are equal only if c1 - c2 is rational. For c1 = sqrt(q1), c2 = sqrt(q2) that means
+    q1 = q2 (identical floats here) or both cosines rational (exact here); a saturated or disjoint candidate is
+    rational. So "같으면 관련도, 그다음 subbrain_id" is decided by the tie rules, not by float rounding (adversarial
+    review M2-FLOAT-TIE-1, M2-V6-FLOATTIE-1/2). The far_distance test is exact for every rational distance too.
+    """
+    if not host_vector or not candidate_vector:
+        return _exact(NO_CONTENT_DISTANCE)
+    small, large = sorted((host_vector, candidate_vector), key=len)
+    dot = sum(count * large[term] for term, count in small.items() if term in large)
+    if dot <= 0:
+        return _exact(NO_CONTENT_DISTANCE)
+    saturation = _exact(cfg.distance_saturation)
+    if saturation <= 0:
+        return Fraction(0)  # any shared term saturates
+    norms = sum(c * c for c in host_vector.values()) * sum(c * c for c in candidate_vector.values())
+    cos2 = Fraction(dot * dot, norms)  # reduced
+    if cos2 >= saturation * saturation:
+        return Fraction(0)
+    num, den = cos2.numerator, cos2.denominator
+    root_num, root_den = math.isqrt(num), math.isqrt(den)
+    if root_num * root_num == num and root_den * root_den == den:
+        return 1 - Fraction(root_num, root_den) / saturation
+    ratio = cos2 / (saturation * saturation)  # (cos / saturation)², in (0, 1)
+    return 1.0 - math.sqrt(ratio.numerator / ratio.denominator)  # int / int is correctly rounded
+
+
+def content_distance(host: SubbrainVersion, candidate: SubbrainVersion, cfg: MatchingConfig) -> float:
+    """MUST-M5 distance in [0, 1], unrounded: 1 - min(1, cosine / distance_saturation).
+
+    cosine is over the term-frequency vectors of the two versions' node labels, tags and summaries. Declared
+    domains and the title never affect it. No tokens on either side -> 1.0. Symmetric and deterministic; equal
+    cosines give the identical value, and a rational distance is the float nearest to it (1/3, not
+    0.33333333333333337). match() ranks on the exact value behind it (`_distance_between`).
+    """
+    return float(_distance_between(_term_vector(host, cfg), _term_vector(candidate, cfg), cfg))
 
 
 # ---------------------------------------------------------------------------
@@ -179,49 +273,43 @@ def domain_distance(host: SubbrainVersion, candidate: SubbrainVersion) -> float:
 # ---------------------------------------------------------------------------
 
 
-class SelectionStrategy(Protocol):
-    def __call__(self, ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
-        """Set `selected` and `reason` on every candidate of `ranked`. In place.
+@dataclass(eq=False)
+class _Scored:
+    """One candidate during selection: the exact values every comparison uses, and its display record."""
 
-        `ranked` arrives sorted by relevance (`_relevance_rank`) with `score` already filled. A strategy must not
-        reorder the list: it is MatchResult.candidates, documented as "sorted by relevance desc" (models.py). A
-        strategy that ranks differently works on a sorted copy and registers its key in RANK_KEYS.
+    out: MatchCandidate  # rounded fields; selection writes `selected` and `reason` here
+    relevance: Fraction
+    distance: Union[Fraction, float]  # exact when rational (_distance_between)
+    score: Fraction  # relevance + distance_bonus * distance if eligible, else 0
+    eligible: bool  # relevance >= tau and relevance > 0
+    below_tau: bool  # relevance < tau
+
+
+class SelectionStrategy(Protocol):
+    def __call__(self, scored: list[_Scored], *, max_members: int, far_distance: float) -> list[_Scored]:
+        """Set `selected` and `reason` on every candidate's `out`; return the candidates in this strategy's
+        ranking (a new list: `scored` itself stays in relevance order, MatchResult.candidates in models.py).
         """
 
 
-def _eligible(candidate: MatchCandidate, tau: float) -> bool:
-    # relevance > 0 keeps NEVER-08 even if tau were configured <= 0.
-    return candidate.relevance >= tau and candidate.relevance > 0
+def _relevance_key(s: _Scored) -> tuple:
+    return (-s.relevance, s.out.subbrain_id, s.out.version)
 
 
-def candidate_score(candidate: MatchCandidate, *, tau: float, distance_bonus: float) -> float:
-    """MUST-M2 score = relevance + distance_bonus * distance for eligible candidates, 0.0 otherwise.
-
-    Gated on the same eligibility as selection, so the bonus never lifts a below-tau or zero-evidence
-    candidate (MUST-M2 forbidden result).
-    """
-    if not _eligible(candidate, tau):
-        return 0.0
-    return round(candidate.relevance + distance_bonus * candidate.distance, 4)
-
-
-def _relevance_rank(c: MatchCandidate) -> tuple:
-    return (-c.relevance, c.subbrain_id, c.version)
-
-
-def _score_rank(c: MatchCandidate) -> tuple:
+def _score_key(s: _Scored) -> tuple:
     # MUST-M2: score, then relevance, then subbrain_id (version only makes the order total).
-    return (-c.score, -c.relevance, c.subbrain_id, c.version)
+    return (-s.score, -s.relevance, s.out.subbrain_id, s.out.version)
 
 
-def _select_top(ranked: list[MatchCandidate], *, max_members: int, tau: float, reason: str) -> None:
-    """Top max_members eligible candidates in list order get `reason`; the other eligible ones are truncated."""
+def _select_top(order: list[_Scored], *, max_members: int, reason: str) -> None:
+    """Top max_members eligible candidates in `order` get `reason`; the other eligible ones are truncated."""
     limit = max(0, max_members)
     taken = 0
-    for c in ranked:
-        if not _eligible(c, tau):
+    for s in order:
+        c = s.out
+        if not s.eligible:
             c.selected = False
-            c.reason = REASON_BELOW_TAU if c.relevance < tau else REASON_NO_MATCH
+            c.reason = REASON_BELOW_TAU if s.below_tau else REASON_NO_MATCH
         elif taken < limit:
             c.selected = True
             c.reason = reason
@@ -231,48 +319,60 @@ def _select_top(ranked: list[MatchCandidate], *, max_members: int, tau: float, r
             c.reason = REASON_TRUNCATED
 
 
-def _guarantee_diversity(ranked: list[MatchCandidate]) -> None:
-    """If no selected member has distance == 1.0 and a truncated (eligible) candidate does, the first such
-    candidate in list order replaces the last selected member in list order."""
-    selected = [c for c in ranked if c.selected]
-    if not selected or any(c.distance == MAX_DISTANCE for c in selected):
+def _guarantee_diversity(order: list[_Scored], *, far_distance: float) -> None:
+    """If no selected member is far (distance >= far_distance) and a truncated (eligible) candidate is, the
+    first such candidate in `order` replaces the last selected member in `order`.
+
+    far_distance is read as the decimal it is written as and compared exactly (a Fraction compares exactly with a
+    float too), so a distance of exactly far_distance is far.
+    """
+    threshold = _exact(far_distance)
+    selected = [s for s in order if s.out.selected]
+    if not selected or any(s.distance >= threshold for s in selected):
         return
-    diverse = next((c for c in ranked if c.reason == REASON_TRUNCATED and c.distance == MAX_DISTANCE), None)
-    if diverse is None:
+    far = next((s for s in order if s.out.reason == REASON_TRUNCATED and s.distance >= threshold), None)
+    if far is None:
         return
-    displaced = selected[-1]
+    displaced = selected[-1].out
     displaced.selected = False
     displaced.reason = REASON_DISPLACED
-    diverse.selected = True
-    diverse.reason = REASON_DIVERSITY
+    far.out.selected = True
+    far.out.reason = REASON_DIVERSITY
 
 
-def select_relevance_only(ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
-    """Top max_members candidates with relevance >= tau, in relevance order."""
-    _select_top(ranked, max_members=max_members, tau=tau, reason=REASON_SELECTED)
+def select_relevance_only(scored: list[_Scored], *, max_members: int, far_distance: float) -> list[_Scored]:
+    """Top max_members candidates with relevance >= tau, in relevance order (far_distance unused)."""
+    order = sorted(scored, key=_relevance_key)
+    _select_top(order, max_members=max_members, reason=REASON_SELECTED)
+    return order
 
 
-def select_relevance_plus_diversity(ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
-    """relevance_only, then guarantee one domain-disjoint member when one was cut by the limit (PROV-M2).
+def select_relevance_plus_diversity(
+    scored: list[_Scored], *, max_members: int, far_distance: float
+) -> list[_Scored]:
+    """relevance_only, then guarantee one far member when one was cut by the limit (PROV-M2, v.6 far_distance).
 
-    If no selected member has distance == 1.0 and a truncated candidate (relevance >= tau) does,
+    If no selected member has distance >= far_distance and a truncated candidate (relevance >= tau) does,
     the best such candidate replaces the lowest-ranked selected member.
     """
-    select_relevance_only(ranked, max_members=max_members, tau=tau)
-    _guarantee_diversity(ranked)
+    order = select_relevance_only(scored, max_members=max_members, far_distance=far_distance)
+    _guarantee_diversity(order, far_distance=far_distance)
+    return order
 
 
-def select_relevance_with_distance_bonus(ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
-    """MUST-M2 (v.5): eligible = relevance >= tau; rank by score, then relevance, then subbrain_id.
+def select_relevance_with_distance_bonus(
+    scored: list[_Scored], *, max_members: int, far_distance: float
+) -> list[_Scored]:
+    """MUST-M2: eligible = relevance >= tau; rank by score, then relevance, then subbrain_id.
 
-    Selects the top max_members eligible candidates in `_score_rank` order ("selected_score"), then applies the
-    same diversity guarantee as relevance_plus_diversity over that order. `ranked` itself keeps its relevance
-    order (the candidates are mutated, the list is not). Below-tau candidates have score 0.0 and are never
-    selected, whatever their distance.
+    Selects the top max_members eligible candidates in score order ("selected_score"), then applies the same
+    diversity guarantee as relevance_plus_diversity over that order. Below-tau candidates have score 0 and are
+    never selected, whatever their distance.
     """
-    by_score = sorted(ranked, key=_score_rank)
-    _select_top(by_score, max_members=max_members, tau=tau, reason=REASON_SELECTED_SCORE)
-    _guarantee_diversity(by_score)
+    order = sorted(scored, key=_score_key)
+    _select_top(order, max_members=max_members, reason=REASON_SELECTED_SCORE)
+    _guarantee_diversity(order, far_distance=far_distance)
+    return order
 
 
 STRATEGIES: dict[str, SelectionStrategy] = {
@@ -281,18 +381,31 @@ STRATEGIES: dict[str, SelectionStrategy] = {
     "relevance_only": select_relevance_only,
 }
 
-# The order each strategy ranks candidates in. MatchResult.candidates is always in relevance order (models.py),
-# so callers that present a ranking (canal_open members, the match-explain table) sort with this key.
+
+def _display_relevance_rank(c: MatchCandidate) -> tuple:
+    return (-c.relevance, c.subbrain_id, c.version)
+
+
+def _display_score_rank(c: MatchCandidate) -> tuple:
+    return (-c.score, -c.relevance, c.subbrain_id, c.version)
+
+
+# The order each strategy ranks candidates in, over the rounded MatchCandidate fields. MatchResult.candidates is
+# always in relevance order (models.py), so callers that present a ranking sort with this key. Rounded values can
+# tie where the unrounded ones do not; RankedMatch.ranking (match_with_ranking) is the exact order match() used.
 RANK_KEYS: dict[str, Callable[[MatchCandidate], tuple]] = {
-    "relevance_with_distance_bonus": _score_rank,
-    "relevance_plus_diversity": _relevance_rank,
-    "relevance_only": _relevance_rank,
+    "relevance_with_distance_bonus": _display_score_rank,
+    "relevance_plus_diversity": _display_relevance_rank,
+    "relevance_only": _display_relevance_rank,
 }
 
 
 def in_rank_order(candidates: Iterable[MatchCandidate], strategy: str) -> list[MatchCandidate]:
-    """`candidates` sorted the way `strategy` ranks them (relevance order for an unknown name)."""
-    return sorted(candidates, key=RANK_KEYS.get(strategy, _relevance_rank))
+    """`candidates` sorted the way `strategy` ranks them, by their displayed (rounded) values.
+
+    Relevance order for an unknown name. For the exact order of a match() call, use match_with_ranking.
+    """
+    return sorted(candidates, key=RANK_KEYS.get(strategy, _display_relevance_rank))
 
 
 def resolve_strategy(strategy: Optional[str], cfg: MatchingConfig) -> str:
@@ -318,6 +431,72 @@ def _is_candidate(candidate: SubbrainVersion, host: SubbrainVersion) -> bool:
     )
 
 
+class RankedMatch(NamedTuple):
+    result: MatchResult
+    ranking: list[MatchCandidate]  # the same objects as result.candidates, in the strategy's exact ranking
+
+
+def match_with_ranking(
+    query: str,
+    host: SubbrainVersion,
+    candidates: list[SubbrainVersion],
+    *,
+    max_members: int,
+    cfg: MatchingConfig,
+    query_mode: QueryMode = QueryMode.AUTO,
+    strategy: str | None = None,
+) -> RankedMatch:
+    """match(), plus the candidates in the order the strategy ranked them by unrounded values."""
+    strategy_name = resolve_strategy(strategy, cfg)
+    select = STRATEGIES[strategy_name]
+
+    mode = QueryMode(query_mode) if query_mode is not None else QueryMode.AUTO
+    if mode is QueryMode.AUTO:
+        mode = QueryMode.TOPIC if query_terms(query, cfg) else QueryMode.WHOLE_HOST
+    terms = query_terms(query, cfg) if mode is QueryMode.TOPIC else host_terms(host, cfg)
+    clean = _clean_terms(terms)
+
+    tau = _exact(cfg.tau)
+    bonus = _exact(cfg.distance_bonus)
+    host_vector = _term_vector(host, cfg)  # once per call
+
+    scored: list[_Scored] = []
+    for candidate in candidates:
+        if not _is_candidate(candidate, host):
+            continue
+        relevance, matched = _score_terms(clean, candidate, cfg)
+        distance = _distance_between(host_vector, _term_vector(candidate, cfg), cfg)
+        # relevance > 0 keeps NEVER-08 even if tau were configured <= 0; the bonus never lifts a below-tau
+        # or zero-evidence candidate (MUST-M2 forbidden result).
+        eligible = relevance >= tau and relevance > 0
+        score = relevance + bonus * Fraction(distance) if eligible else Fraction(0)
+        out = MatchCandidate(
+            subbrain_id=candidate.subbrain_id,
+            version=candidate.version,
+            owner_id=candidate.owner_id,
+            relevance=display_value(relevance),
+            distance=display_value(distance),
+            score=display_value(score),
+            matched_terms=matched,
+            selected=False,
+            reason="",
+        )
+        scored.append(_Scored(out, relevance, distance, score, eligible, relevance < tau))
+    scored.sort(key=_relevance_key)
+
+    order = select(scored, max_members=max_members, far_distance=cfg.far_distance)
+
+    result = MatchResult(
+        query_mode_used=mode,
+        query_terms=terms,
+        strategy=strategy_name,
+        tau=cfg.tau,
+        candidates=[s.out for s in scored],
+        truncated=any(s.out.reason in (REASON_TRUNCATED, REASON_DISPLACED) for s in scored),
+    )
+    return RankedMatch(result, [s.out for s in order])
+
+
 def match(
     query: str,
     host: SubbrainVersion,
@@ -332,51 +511,17 @@ def match(
 
     AUTO -> TOPIC if query_terms() is non-empty else WHOLE_HOST.
     Never select relevance < tau (MUST-M1). Never select candidates owned by host.owner_id (MUST-M4).
-    Every candidate gets `score` = round(relevance + cfg.distance_bonus * distance, 4) if eligible, else 0.0.
+    distance = content_distance(host, candidate) (MUST-M5); the host's term vector is built once per call.
+    Every eligible candidate gets score = relevance + cfg.distance_bonus * distance, others 0.0.
     relevance_with_distance_bonus (default, MUST-M2): top max_members by (score, relevance, subbrain_id),
     then the diversity swap below over that order.
     relevance_only: top max_members by relevance (tie-break subbrain_id).
-    relevance_plus_diversity: same, then if no selected member has distance == 1.0 and an unselected
-    candidate with distance == 1.0 and relevance >= tau exists, swap it in for the lowest selected.
-    Every strategy lists candidates in relevance order (models.py); `in_rank_order` gives the strategy's own
-    ranking. Deterministic for identical input.
+    relevance_plus_diversity: same, then if no selected member is far (distance >= cfg.far_distance) and an
+    unselected far candidate with relevance >= tau exists, swap the best one in for the lowest selected.
+    All ranking and τ comparisons use unrounded values; relevance, distance and score on MatchCandidate are
+    rounded to DISPLAY_DECIMALS for display. Every strategy lists candidates in relevance order (models.py);
+    match_with_ranking gives the strategy's own ranking. Deterministic for identical input.
     """
-    strategy_name = resolve_strategy(strategy, cfg)
-    select = STRATEGIES[strategy_name]
-
-    mode = QueryMode(query_mode) if query_mode is not None else QueryMode.AUTO
-    if mode is QueryMode.AUTO:
-        mode = QueryMode.TOPIC if query_terms(query, cfg) else QueryMode.WHOLE_HOST
-    terms = query_terms(query, cfg) if mode is QueryMode.TOPIC else host_terms(host, cfg)
-
-    scored: list[MatchCandidate] = []
-    for candidate in candidates:
-        if not _is_candidate(candidate, host):
-            continue
-        relevance, matched = score_relevance(terms, candidate, cfg)
-        scored.append(
-            MatchCandidate(
-                subbrain_id=candidate.subbrain_id,
-                version=candidate.version,
-                owner_id=candidate.owner_id,
-                relevance=relevance,
-                distance=domain_distance(host, candidate),
-                matched_terms=matched,
-                selected=False,
-                reason="",
-            )
-        )
-    for c in scored:
-        c.score = candidate_score(c, tau=cfg.tau, distance_bonus=cfg.distance_bonus)
-    scored.sort(key=_relevance_rank)
-
-    select(scored, max_members=max_members, tau=cfg.tau)
-
-    return MatchResult(
-        query_mode_used=mode,
-        query_terms=terms,
-        strategy=strategy_name,
-        tau=cfg.tau,
-        candidates=scored,
-        truncated=any(c.reason in (REASON_TRUNCATED, REASON_DISPLACED) for c in scored),
-    )
+    return match_with_ranking(
+        query, host, candidates, max_members=max_members, cfg=cfg, query_mode=query_mode, strategy=strategy
+    ).result
