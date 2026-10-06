@@ -19,7 +19,7 @@
 | 2 | 누가 어디서 쓰는가 | 여러 외부 사용자. 개인 LLM이 MCP로 접속하고, 웹사이트는 나중에 만든다 | — |
 | 3 | 데이터·계정 | 각자의 secondbrain에서 고른 노드·엣지 묶음과 사용자 계정, 티어 | 서브브레인에 원문을 넣을지 → Q2 |
 | 4 | 현실에 미치는 행동 | 다른 사람 두뇌 일부가 내 LLM 컨텍스트로 들어오고, 티어 과금을 하게 된다 | 결제는 이번 범위 밖 |
-| 5 | 가장 피하고 싶은 실패 | `unknown` — 오너 답 필요 (예: 비공개 노드 유출, 뻔한 결과만 나옴) | 오너 확인 |
+| 5 | 가장 피하고 싶은 실패 | 쓸모없는 델타브레인, 서브브레인 노출, 티어 밖 MCP 도구 노출, 키워드를 무시한 커널링, 무의미한 노드·엣지 (**델타브레인 노드·엣지 품질이 가장 중요**) | ORACLE에 반영 |
 
 ## 위험 판정 — 강제 승격 트리거가 이미 보인다
 
@@ -57,4 +57,4 @@ NDSH에 따르면 R2의 보호 변경(인증·권한·tenant, 개인정보, 결�
 | 위험 | [docs/risks/RISK-001.md](docs/risks/RISK-001.md) |
 | 결정 | [docs/DECISIONS.md](docs/DECISIONS.md) |
 | 데이터 지도 | [docs/DATA_MAP.md](docs/DATA_MAP.md) |
-| 정답(Oracle) | `docs/oracle/ORACLE_MANIFEST.md` — Q1~Q4 확정 뒤 고정 |
+| 정답(Oracle) | [docs/oracle/ORACLE_MANIFEST.md](docs/oracle/ORACLE_MANIFEST.md) — 초안, Owner self-test 대기 |
