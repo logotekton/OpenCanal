@@ -42,7 +42,7 @@ UNTRUSTED_NOTICE = (
 )
 # Every NOT_FOUND leaves the service with this exact error object (no existence leak, NEVER-01/05).
 NOT_FOUND_MESSAGE = "찾을 수 없습니다 / not found"
-INTERNAL_CODE = "INTERNAL"
+INTERNAL_CODE = ErrorCode.INTERNAL.value
 INTERNAL_MESSAGE = "internal error"
 SEARCH_LIMIT_MAX = 20
 PREVIEW_NODES = 20

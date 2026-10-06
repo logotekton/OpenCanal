@@ -157,11 +157,8 @@ def _analyze_edges(submission: DeltabrainSubmission, idx: _CanalIndex) -> list[_
     node_refs = {node.id: _node_valid_refs(node, idx) for node in submission.nodes}
     infos: list[_EdgeInfo] = []
     for edge in submission.edges:
-        refs = [
-            *node_refs.get(edge.source, ()),
-            *node_refs.get(edge.target, ()),
-            *(ref for ref in _distinct(edge.provenance) if idx.is_valid(ref)),
-        ]
+        # Oracle v.3 §4: only endpoint provenance decides owners; edge-level refs are evidence (checked by Q1).
+        refs = [*node_refs.get(edge.source, ()), *node_refs.get(edge.target, ())]
         infos.append(
             _EdgeInfo(
                 edge=edge,
@@ -470,16 +467,17 @@ def _check_novelty(sub: DeltabrainSubmission, idx: _CanalIndex, infos: list[_Edg
     sources = {node.id: node for node in sub.nodes if node.kind == NodeKind.SOURCE}
     for info in infos:
         edge = info.edge
-        if not info.emergent or edge.source not in sources or edge.target not in sources:
+        # Oracle v.3: applies to every source-source edge, emergent or not (a deltabrain carries only the delta).
+        if edge.source not in sources or edge.target not in sources:
             continue
         copied = _copied_input_edge(sources[edge.source], sources[edge.target], idx)
         if copied is not None:
             subbrain_id, version = copied
             out.append(_v(
                 ViolationCode.NOT_NOVEL,
-                f"창발 엣지 {_q(edge.id)}는 입력 서브브레인 ({_q(subbrain_id)}, v{version})에 이미 있는 엣지를 옮긴 것입니다. "
+                f"엣지 {_q(edge.id)}는 입력 서브브레인 ({_q(subbrain_id)}, v{version})에 이미 있는 엣지를 옮긴 것입니다. "
                 f"입력에 없는 새 연결을 만드세요. "
-                f"/ Emergent edge {_q(edge.id)} copies an edge that already exists in input subbrain "
+                f"/ Edge {_q(edge.id)} copies an edge that already exists in input subbrain "
                 f"({_q(subbrain_id)}, v{version}); propose a connection the inputs do not already contain.",
                 edge_id=edge.id,
             ))
@@ -620,7 +618,7 @@ def parse_submission(payload: dict[str, Any]) -> tuple[DeltabrainSubmission | No
 
 
 def compute_stats(submission: DeltabrainSubmission, ctx: CanalContext) -> DeltabrainStats:
-    """Emergent edges = effective provenance owners >= 2; host-touching = effective provenance cites host subbrain."""
+    """Emergent edges = endpoint provenance owners >= 2; host-touching = an endpoint cites the host subbrain (Oracle v.3)."""
     idx = _index(ctx)
     return _stats(submission, idx, _analyze_edges(submission, idx))
 

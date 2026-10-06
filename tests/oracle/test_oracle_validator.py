@@ -106,7 +106,10 @@ def mut_label_normalized_copy() -> dict:
 
 
 def mut_copied_input_edge() -> dict:
-    """An emergent source-source edge that re-states sb_B's own edge b-n2 -applies_to-> b-n3."""
+    """A source-source edge that re-states sb_B's own edge b-n2 -applies_to-> b-n3.
+
+    Oracle v.3: the edge-level C ref no longer makes it emergent; MUST-Q5 now covers every source-source edge.
+    """
     g = load_delta("good-01")
     g["nodes"].append({"id": "s-b2", "kind": "source", "label": "오조작 방지 설계", "provenance": [_ref("sb_B", "b-n3")]})
     g["edges"].append(
@@ -166,18 +169,20 @@ def mut_all_at_once() -> dict:
 
 
 def padded(total_nodes: int, total_edges: int) -> dict:
-    """good-01 grown with valid, non-emergent source nodes hung off the query node (only size changes)."""
+    """good-01 grown with valid, non-emergent source nodes hung off the query node (only size changes).
+
+    Padding edges attach to the query node (not source-source), so Oracle v.3 MUST-Q5 cannot fire on filler.
+    """
     g = load_delta("good-01")
     extra = total_nodes - len(g["nodes"])
     assert extra >= 0
     for i in range(extra):
         g["nodes"].append({"id": f"x{i}", "kind": "source", "label": "모듈러 건축", "provenance": [_ref("sb_A", "a-n1")]})
         g["edges"].append({"id": f"ex{i}", "source": "q", "target": f"x{i}", "relation": "requires"})
-    anchors = ["s-a1", "s-a2", "s-a3"]
     k = 0
     while len(g["edges"]) < total_edges:
-        i, anchor = k % extra, anchors[(k // extra) % len(anchors)]
-        g["edges"].append({"id": f"ey{k}", "source": f"x{i}", "target": anchor, "relation": "requires"})
+        i = k % extra
+        g["edges"].append({"id": f"ey{k}", "source": f"x{i}", "target": "q", "relation": "explains"})
         k += 1
     assert len(g["nodes"]) == total_nodes and len(g["edges"]) == total_edges
     return g
@@ -453,3 +458,48 @@ def test_must_q_golden_files_do_not_share_state(ctx, cfg):
     ctx_copy = copy.deepcopy(ctx)
     _accept(load_delta("good-01"), ctx_copy, cfg)
     _accept(load_delta("good-01"), ctx, cfg)
+
+
+# ---------------------------------------------------------------------------
+# Oracle v.3 (§4): emergence and host-touching come from endpoint provenance only.
+# An edge-level ref is evidence, not an owner. Added by the Oracle owner proxy (planner), not the Builder.
+# ---------------------------------------------------------------------------
+
+
+def edge_ref_only_bridge() -> dict:
+    """Two A anchors joined by an edge that cites a C node only on the edge itself."""
+    return {
+        "nodes": [
+            {"id": "q", "kind": "query", "label": "모듈러 건축의 현장 조립 오류를 줄일 아이디어"},
+            {"id": "s1", "kind": "source", "label": "현장 조립 오류", "provenance": [_ref("sb_A", "a-n2")]},
+            {"id": "s2", "kind": "source", "label": "공차 관리", "provenance": [_ref("sb_A", "a-n4")]},
+        ],
+        "edges": [
+            {"id": "e1", "source": "s1", "target": "q", "relation": "explains"},
+            {
+                "id": "e2",
+                "source": "s2",
+                "target": "s1",
+                "relation": "risk_for",
+                "rationale": "공차 관리가 느슨하면 현장 조립 오류가 늘어나며, 세포의 형태 상보성처럼 맞물림이 어긋나면 결합이 실패한다.",
+                "provenance": [_ref("sb_C", "c-n2")],
+            },
+        ],
+    }
+
+
+def test_must_q3_v3_edge_level_ref_does_not_create_emergence(ctx, cfg):
+    result = _check(edge_ref_only_bridge(), ctx, cfg, {"NO_EMERGENCE"})
+    assert result.stats is not None and result.stats.emergent_edge_ids == []
+
+
+def test_must_q1_v3_edge_level_ref_is_still_validated(ctx, cfg):
+    g = edge_ref_only_bridge()
+    _edge(g, "e2")["provenance"] = [_ref("sb_D", "d-n1")]
+    _check(g, ctx, cfg, {"NO_EMERGENCE", "PROVENANCE_OUT_OF_CANAL"})
+
+
+def test_must_q3_v3_good01_unchanged(ctx, cfg):
+    result = _accept(load_delta("good-01"), ctx, cfg)
+    assert set(result.stats.emergent_edge_ids) == GOOD_EMERGENT
+    assert set(result.stats.host_touching_emergent_edge_ids) == GOOD_HOST_TOUCHING

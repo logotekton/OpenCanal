@@ -107,7 +107,7 @@ VALID = {
     ],
     "edges": [
         edge("e0", "q", "sa1", "requires"),
-        edge("e_copy", "sa1", "sa2", "requires"),  # copies A's a1-a2, but not emergent: allowed
+        edge("e_ctx", "q", "sa2", "requires"),  # non-emergent context edge (Oracle v.3: copying an input edge would be NOT_NOVEL)
         edge("e1", "sc1", "sa1", "applies_to", R1),
         edge("e2", "sb1", "sa2", "analogous_to", R2),
         edge("e3", "n1", "sa2", "extends", R3),
@@ -181,7 +181,8 @@ def test_new_node_citing_two_nodes_of_the_same_owner_is_allowed():
     assert "e4" not in result.stats.emergent_edge_ids
 
 
-def test_edge_own_provenance_can_make_it_emergent():
+def test_edge_own_provenance_does_not_make_it_emergent():
+    # Oracle v.3 §4: owners come from endpoint provenance only; the edge-level C1 ref is evidence.
     payload = {
         "nodes": [
             node("q", "query", "현장 조립 오류"),
@@ -194,9 +195,9 @@ def test_edge_own_provenance_can_make_it_emergent():
         ],
     }
     result = run(payload)
-    assert result.ok, result.violations
-    assert result.stats.emergent_edge_ids == ["e1"]
-    assert result.stats.host_touching_emergent_edge_ids == ["e1"]
+    assert codes(result) == [ViolationCode.NO_EMERGENCE]
+    assert result.stats.emergent_edge_ids == []
+    assert result.stats.host_touching_emergent_edge_ids == []
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +223,7 @@ def test_parse_submission_reports_location_and_ids():
     assert "nodes[0].kind" in messages
     assert "edges[1].weight" in messages
     assert {v.node_id for v in failure.violations} >= {"q"}
-    assert {v.edge_id for v in failure.violations} >= {"e_copy"}
+    assert {v.edge_id for v in failure.violations} >= {"e_ctx"}
 
 
 @pytest.mark.parametrize("payload", [None, [], "nodes", {"edges": []}, {"nodes": [{"id": "q"}]}])
@@ -291,7 +292,7 @@ def test_size_at_limit_is_fine():
 def test_no_query_node_skips_hop_check():
     payload = fresh()
     payload["nodes"] = [n for n in payload["nodes"] if n["id"] != "q"]
-    payload["edges"] = [e for e in payload["edges"] if e["id"] != "e0"]
+    payload["edges"] = [e for e in payload["edges"] if "q" not in (e["source"], e["target"])]
     payload["nodes"].append(node("lonely", "source", "공차 관리", A3))
     result = run(payload)
     assert codes(result) == [ViolationCode.QUERY_NODE_COUNT]
@@ -326,14 +327,17 @@ def test_query_node_refs_do_not_create_emergence():
 
 def test_off_query_nodes_far_and_disconnected():
     payload = fresh()
+    # sb1 sits 2 hops from q (q -> sa2 -> sb1), so n_mid is at 3 hops and n_far at 4.
+    payload["nodes"].append(node("n_mid", "new", "형상 키 기반 조립 순서 검증", C2, A3))
     payload["nodes"].append(node("n_far", "new", "오류 교정 루프 기반 공차 흡수", C2, A3))
     payload["nodes"].append(node("n_iso", "new", "자기 교정 접합 순서", C2, A3))
-    payload["edges"].append(edge("e4", "sb1", "n_far", "extends", R3 + " 그리고 교정 루프를 더한다"))
+    payload["edges"].append(edge("e4", "sb1", "n_mid", "extends", R3 + " 그리고 순서 검증을 더한다"))
+    payload["edges"].append(edge("e5", "n_mid", "n_far", "extends", R1 + " 여기에 교정 루프를 붙인다"))
     result = run(payload)
     off = by_code(result, ViolationCode.OFF_QUERY_NODE)
     assert [v.node_id for v in off] == ["n_far", "n_iso"]
     assert "4" in off[0].message
-    assert codes(result) == [ViolationCode.OFF_QUERY_NODE] * 2  # sb1 at exactly 3 hops is fine
+    assert codes(result) == [ViolationCode.OFF_QUERY_NODE] * 2  # n_mid at exactly 3 hops is fine
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +482,7 @@ def test_rationale_missing_short_and_long():
     result = run(payload)
     missing = by_code(result, ViolationCode.RATIONALE_MISSING)
     assert [v.edge_id for v in missing] == ["e1", "e2", "e3"]
-    assert codes(result) == [ViolationCode.RATIONALE_MISSING] * 3  # e0/e_copy are not emergent
+    assert codes(result) == [ViolationCode.RATIONALE_MISSING] * 3  # e0/e_ctx are not emergent
 
 
 def test_rationale_length_is_measured_after_normalization():
@@ -514,8 +518,9 @@ def test_emergent_edge_copying_an_input_edge(source, target):
         "edges": [edge("e0", "q", "sa1"), edge("e1", source, target, "applies_to", R1, C1)],
     }
     result = run(payload)
+    # Oracle v.3: same-subbrain edge is not emergent, but copying an input edge is still NOT_NOVEL.
     assert [v.edge_id for v in by_code(result, ViolationCode.NOT_NOVEL)] == ["e1"]
-    assert codes(result) == [ViolationCode.NOT_NOVEL]
+    assert sorted(codes(result)) == sorted([ViolationCode.NO_EMERGENCE, ViolationCode.NOT_NOVEL])
 
 
 def test_node_id_collision_across_subbrains_is_not_a_copy():

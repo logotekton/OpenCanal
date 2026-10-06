@@ -57,6 +57,7 @@ class ErrorCode(str, Enum):
     VALIDATION_FAILED = "VALIDATION_FAILED"
     NOT_EMERGENT_EDGE = "NOT_EMERGENT_EDGE"
     NOT_AVAILABLE = "NOT_AVAILABLE"
+    INTERNAL = "INTERNAL"  # unexpected server error; never carries internals (ORACLE §9, v.3)
 
 
 class ViolationCode(str, Enum):
