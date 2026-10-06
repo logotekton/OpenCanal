@@ -107,18 +107,32 @@ def _sorted_lists(obj: Any) -> Any:
     return obj
 
 
-def canonical(obj: Any, replacements: dict[str, str], *, token_keys: Iterable[str] = ("owner_token",)) -> Any:
+MASKED_REF_ID_KEYS = ("subbrain_id", "node_id")
+
+
+def canonical(
+    obj: Any, replacements: dict[str, str], *, token_keys: Iterable[str] = ("owner_token", "withheld_ref")
+) -> Any:
     """JSON-equal form with world-specific values replaced by placeholders.
 
     replacements: server-assigned ids of this world -> stable placeholder. Every value under a `token_keys`
     key becomes "<TOKEN>" wherever it occurs. ISO timestamps become "<TS>". Lists are compared as multisets
     (an order that follows random ids is not an identity leak).
+
+    v.5 (NEVER-11): a masked provenance ref (a dict carrying an `owner_token`) must not show the real
+    subbrain_id/node_id; if it shows an opaque per-deltabrain handle there instead, that handle differs between
+    worlds exactly like the token does, so it becomes "<MASKED>". Linkability of those handles is pinned in
+    test_oracle_v5_unlinkability.py, not here.
     """
     reps = dict(replacements)
     keys = set(token_keys)
 
     def collect(o: Any) -> None:
         if isinstance(o, dict):
+            if any(isinstance(o.get(k), str) and o.get(k) for k in keys):
+                for k in MASKED_REF_ID_KEYS:
+                    if isinstance(o.get(k), str) and o[k]:
+                        reps[o[k]] = "<MASKED>"
             for k, v in o.items():
                 if k in keys and isinstance(v, str) and v:
                     reps[v] = "<TOKEN>"

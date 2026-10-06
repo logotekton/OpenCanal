@@ -37,7 +37,7 @@ v0는 로컬 전용이다(R0). 서버는 `127.0.0.1`에만 띄우고, 합성 두
 ```bash
 python3.12 -m venv .venv
 .venv/bin/pip install -e '.[test]'
-.venv/bin/opencanal init-db          # data/opencanal.db, data/keys/master.key (0600)
+.venv/bin/opencanal init-db          # data/opencanal.db, data/keys/master.key (0600). 새로 만드는 데이터 디렉터리는 0700
 .venv/bin/opencanal seed-fixtures    # fixtures/brains/*.json → 사용자·서브브레인, 새 사용자 토큰을 한 번 출력
 ```
 
@@ -87,7 +87,7 @@ claude mcp add opencanal -e OPENCANAL_TOKEN=<token> -- /절대경로/opencanal/.
   --host-subbrain-id <subbrain_id> [--mode auto|topic|whole_host]
 ```
 
-τ 미만 후보까지 관련도, 거리, 겹친 용어, 선택 여부, 이유를 표로 보여준다. 커널을 만들지 않고 사용량도 차감하지 않는다. `--token`을 생략하면 `OPENCANAL_TOKEN`을 쓴다.
+τ 미만 후보까지 순위, 관련도, 거리, 점수(관련도 + `distance_bonus` × 거리, τ 미만은 0), 겹친 용어, 선택 여부, 이유를 표로 보여준다. 행은 쓰인 전략의 순위 순이다(기본 `relevance_with_distance_bonus`는 점수 순). 커널을 만들지 않고 사용량도 차감하지 않는다. `--token`을 생략하면 `OPENCANAL_TOKEN`을 쓴다.
 
 ### 백업과 복원
 

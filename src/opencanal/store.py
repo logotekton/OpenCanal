@@ -9,6 +9,8 @@ public and private, and every version / canal / deltabrain row is kept.
 
 Every write runs in one BEGIN IMMEDIATE transaction (`_write_txn`), so a count-then-write such as the
 monthly canal limit or the public subbrain limit is atomic across processes sharing the DB file (TIER-1).
+
+MUST-E3 (v.5): the DB file and its -wal/-shm/-journal sidecars are 0600, the directory created for them 0700.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import tempfile
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -52,9 +55,15 @@ from .models import (
 MASKED_DISPLAY = "비공개 기여자"
 MONTHLY_CANAL_LIMIT_MESSAGE = "이번 달 커널 수 한도를 넘습니다 / monthly canal limit reached"
 PUBLIC_SUBBRAIN_LIMIT_MESSAGE = "공개 서브브레인 수 한도를 넘습니다 / public subbrain limit reached"
+# Contributor tokens hold the owner id in a fixed-size frame (NEVER-11 v.5), so user ids have a hard cap.
+MAX_USER_ID_CHARS = crypto.MAX_OWNER_ID_CHARS
+USER_ID_TOO_LONG_MESSAGE = (
+    f"사용자 ID는 {MAX_USER_ID_CHARS}자 이하여야 합니다 / user id must be at most {MAX_USER_ID_CHARS} characters"
+)
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 # Files SQLite treats as part of the database at <db>: a stale one is replayed into a restored image (CRY-1).
 _SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 
 # How one owner is counted for one viewer: ("plain", owner_id) or ("masked", owner_token) (NEVER-11).
@@ -224,6 +233,62 @@ def _exists_error(path: Path) -> FileExistsError:
     return FileExistsError(errno.EEXIST, "refusing to restore over an existing database file", str(path))
 
 
+def _sidecars(path: Path) -> list[Path]:
+    return [path.with_name(path.name + suffix) for suffix in _SQLITE_SIDECARS]
+
+
+def _tighten(fd: int) -> None:
+    """chmod 0600 when the open file is a regular file with any permission bit beyond 0600 (MUST-E3)."""
+    st = os.fstat(fd)
+    if stat.S_ISREG(st.st_mode) and stat.S_IMODE(st.st_mode) & ~crypto.PRIVATE_FILE_MODE:
+        os.fchmod(fd, crypto.PRIVATE_FILE_MODE)
+
+
+def _tighten_existing(path: Path) -> None:
+    try:
+        # O_NONBLOCK: never hang on a FIFO planted at a sidecar path.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | _O_CLOEXEC)
+    except FileNotFoundError:
+        return
+    try:
+        _tighten(fd)
+    finally:
+        os.close(fd)
+
+
+def _resolved_db_path(path: Path) -> Path:
+    """The file SQLite actually uses for `path`: symlinks resolved, also a dangling one (its target).
+
+    O_CREAT|O_EXCL on a symlink fails with EEXIST even when its target is missing, and SQLite places -wal/-shm/
+    -journal next to the resolved target, not next to the link. Checking modes on the link path would therefore
+    miss the very files SQLite creates (MUST-E3), so everything is done on, and SQLite opens, this path."""
+    return Path(os.path.realpath(path))
+
+
+def _prepare_db_file(db_path: Path) -> Path:
+    """Before SQLite opens the DB (MUST-E3): create the directory (0700, only what is missing) and a missing DB file
+    with mode 0600, and narrow an existing DB file and existing sidecars to 0600. All of it on the resolved path
+    (`_resolved_db_path`), which is returned: the caller must open that path, not `db_path`.
+
+    SQLite creates -wal/-shm/-journal with the main file's mode (unix VFS, verified), so a 0600 DB file keeps every
+    sidecar it creates later at 0600; existing sidecars may predate that and are narrowed here.
+    """
+    path = _resolved_db_path(db_path)
+    crypto.make_private_dirs(path.parent)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_CLOEXEC, crypto.PRIVATE_FILE_MODE)
+    except FileExistsError:
+        _tighten_existing(path)
+    else:
+        try:
+            os.fchmod(fd, crypto.PRIVATE_FILE_MODE)  # umask can only remove bits; pin the mode exactly
+        finally:
+            os.close(fd)
+    for sidecar in _sidecars(path):
+        _tighten_existing(sidecar)
+    return path
+
+
 class Store:
     def __init__(self, db_path: Path | str, *, master_key: bytes) -> None:
         """Open/create the SQLite DB (":memory:" allowed) and create tables if missing."""
@@ -235,7 +300,8 @@ class Store:
         path = str(db_path)
         self._is_memory = path == ":memory:" or path.startswith("file::memory:")
         if not self._is_memory:
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            # Open the resolved path, so the files whose modes were just checked are the ones SQLite uses (MUST-E3).
+            path = str(_prepare_db_file(Path(path)))
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._lock:
@@ -244,6 +310,11 @@ class Store:
                 self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
+            if not self._is_memory:
+                # The first write created -wal/-shm with the DB file's mode; re-check in case a sidecar was created
+                # by another opener between our check and SQLite's open (MUST-E3).
+                for sidecar in _sidecars(Path(path)):
+                    _tighten_existing(sidecar)
 
     def close(self) -> None:
         with self._lock:
@@ -383,8 +454,17 @@ class Store:
 
     # -- users / tokens ---------------------------------------------------
     def create_user(self, display_name: str, tier: Tier, *, user_id: Optional[str] = None) -> tuple[User, str]:
-        """Create a user and return (user, plaintext_token). Only the token hash is stored."""
+        """Create a user and return (user, plaintext_token). Only the token hash is stored.
+
+        INVALID_ARGUMENT for a user id over MAX_USER_ID_CHARS characters (or not encodable as UTF-8): the id must
+        fit the fixed-size contributor-token frame (NEVER-11 v.5)."""
         uid = user_id or _new_id("u_")
+        if not isinstance(uid, str) or len(uid) > MAX_USER_ID_CHARS:
+            raise OpenCanalError(ErrorCode.INVALID_ARGUMENT, USER_ID_TOO_LONG_MESSAGE)
+        try:
+            uid.encode("utf-8")
+        except UnicodeEncodeError:
+            raise OpenCanalError(ErrorCode.INVALID_ARGUMENT, "user id is not valid text") from None
         tier = Tier(tier)
         with self._write_txn():
             if self._one("SELECT 1 FROM users WHERE id = ?", (uid,)) is not None:
@@ -670,6 +750,11 @@ class Store:
         assert canal is not None
         return canal
 
+    def withheld_ref(self, canal_id: str, subbrain_id: str) -> str:
+        """Opaque per-canal handle shown instead of the ids of a subbrain withheld from a viewer (NEVER-11 v.5).
+        Same subbrain in the same canal -> same ref; another canal -> an unrelated ref."""
+        return crypto.withheld_ref(self._master_key, canal_id, subbrain_id)
+
     def get_canal_for_viewer(self, viewer_id: str, canal_id: str) -> Canal:
         """Participants only (host + member owners). NOT_FOUND otherwise."""
         with self._lock:
@@ -781,7 +866,10 @@ class Store:
 
         "stats" is computed over the identities shown to this viewer (ORACLE v.4 NEVER-11, `_viewer_stats`):
         emergent edges, host-touching edges and owners_involved never reveal whether a masked contributor is
-        one of the plainly shown owners. The stored record keeps the true stats."""
+        one of the plainly shown owners. The stored record keeps the true stats.
+
+        No real id of a masked subbrain appears anywhere (NEVER-11 v.5): masked refs carry null
+        subbrain_id/version/node_id, and "host_subbrain_id" is null when the host is masked for this viewer."""
         with self._lock:
             row = self._one("SELECT * FROM deltabrains WHERE id = ?", (deltabrain_id,))
             canal = self._canal(row["canal_id"]) if row is not None else None
@@ -789,6 +877,11 @@ class Store:
                 raise _not_found()
             record = self._record(row)
             idents = self._viewer_identities(viewer_id, deltabrain_id, record.submission)
+            host_sb = self._subbrain_row(canal.host_subbrain_id)
+        # NEVER-11 v.5: a host now private is masked like any other contributor, top-level id included.
+        host_shown = host_sb is not None and (
+            host_sb["visibility"] == Visibility.PUBLIC.value or host_sb["owner_id"] == viewer_id
+        )
         stats = _viewer_stats(
             record.submission, record.stats, (canal.host_subbrain_id, canal.host_version), self._keys(idents)
         )
@@ -823,7 +916,7 @@ class Store:
             "id": record.id,
             "canal_id": record.canal_id,
             "query": canal.query,
-            "host_subbrain_id": canal.host_subbrain_id,
+            "host_subbrain_id": canal.host_subbrain_id if host_shown else None,
             "created_at": record.created_at,
             "synthesizer": record.submission.synthesizer.model_dump(mode="json"),
             "stats": stats.model_dump(mode="json"),
@@ -941,7 +1034,7 @@ class Store:
                 raise _exists_error(candidate)
         if not data.startswith(_SQLITE_MAGIC):
             raise ValueError("not a SQLite database image")
-        path.parent.mkdir(parents=True, exist_ok=True)
+        crypto.make_private_dirs(path.parent)
         fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".restoring")
         tmp = Path(tmp_name)
         try:

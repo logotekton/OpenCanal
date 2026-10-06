@@ -67,8 +67,13 @@ def test_never_02_v4_host_switched_private_is_withheld_in_canal_get(seeded: Worl
         env = assert_ok(seeded.call(viewer, "canal_get", canal_id=canal_id))
         for s in A_ONLY:
             assert not find_strings(env, s), f"host content still served to {viewer} after the host went private: {s!r}"
-        marks = _withheld_entries(env, aid)
-        assert marks and all(d["withheld"] is True for d in marks), f"host must be marked withheld:true for {viewer}"
+        # Oracle v.5 NEVER-11 + §9: the withheld host is an opaque per-canal `withheld_ref`, never the real
+        # subbrain_id (was: located by the real subbrain_id).
+        marks = find_dicts(env, lambda d: d.get("withheld") is True)
+        assert marks, f"host must be marked withheld:true for {viewer}"
+        refs = {d.get("withheld_ref") for d in marks}
+        assert len(refs) == 1 and all(isinstance(r, str) and r for r in refs), f"one withheld_ref for {viewer}: {marks}"
+        assert not find_strings(env, aid), f"real host subbrain_id shown to {viewer} (NEVER-11 v.5)"
         assert find_strings(env["untrusted_data"], "형태 상보성"), "still-public members stay visible"
 
     own = assert_ok(seeded.call("user_a", "canal_get", canal_id=canal_id))

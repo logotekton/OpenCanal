@@ -158,8 +158,13 @@ def test_never_02_private_switch_effects(seeded: World):
     for s in _content_strings("B"):
         if s != "잘못 놓을 수 없는 블록 모양":  # the one B label good-01 carried into the deltabrain
             assert s not in text, f"withheld member content still served: {s}"
-    withheld = find_dicts(canal, lambda d: d.get("subbrain_id") == bid and "withheld" in d)
-    assert withheld and all(d["withheld"] is True for d in withheld), "withdrawn member must be marked withheld:true"
+    # Oracle v.5 NEVER-11 + §9: a withheld entry carries an opaque per-canal `withheld_ref`, never the real
+    # subbrain_id (was: located by the real subbrain_id).
+    withheld = find_dicts(canal, lambda d: d.get("withheld") is True)
+    assert withheld, "withdrawn member must be marked withheld:true"
+    refs = {d.get("withheld_ref") for d in withheld}
+    assert len(refs) == 1 and all(isinstance(r, str) and r for r in refs), f"one withheld_ref for B: {withheld}"
+    assert bid not in text, "real subbrain_id of the withheld member shown (NEVER-11 v.5)"
 
     # Existing deltabrain keeps the derived nodes for every participant.
     for viewer in ("user_a", "user_b", "user_c"):

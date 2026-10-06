@@ -202,9 +202,10 @@ _TOOL_DEFS: tuple[_ToolDef, ...] = (
     ),
     _ToolDef(
         "canal_get",
-        "내가 참여한 커널을 조회한다. 지금 공개인 서브브레인 내용만 보이고, 비공개로 바뀐 것은 withheld로 표시한다. "
-        "/ Get a canal you participate in. Only currently public subbrain content is included; "
-        "subbrains switched to private are marked withheld.",
+        "내가 참여한 커널을 조회한다. 지금 공개인 서브브레인 내용만 보이고, 비공개로 바뀐 것은 withheld로 표시하며 ID 대신 "
+        "이 커널 안에서만 통하는 withheld_ref를 준다. / Get a canal you participate in. Only currently public subbrain "
+        "content is included; subbrains switched to private are marked withheld and carry, instead of their ids, a "
+        "withheld_ref that is meaningful only within this canal.",
         CanalIdArgs,
         "_canal_get",
     ),
@@ -295,8 +296,10 @@ def _subbrain_view(sv: SubbrainVersion) -> dict[str, Any]:
     }
 
 
-def _withheld(subbrain_id: str, version: int) -> dict[str, Any]:
-    return {"subbrain_id": subbrain_id, "version": version, "withheld": True}
+def _withheld(ref: str) -> dict[str, Any]:
+    """A subbrain withheld from this viewer: no real id or version, only the canal-scoped opaque ref (NEVER-11 v.5),
+    so the same private subbrain cannot be linked across canals."""
+    return {"withheld": True, "withheld_ref": ref}
 
 
 def _graph_from_view(view: dict[str, Any]) -> dict[str, Any]:
@@ -600,9 +603,11 @@ class Service:
             a.query, host, candidates, max_members=limits.max_members_per_canal, cfg=cfg, query_mode=a.query_mode
         )
         by_key = {(sv.subbrain_id, sv.version): sv for sv in candidates}
+        # Members are listed in the strategy's ranking (MUST-M2: by score), not in the relevance order of
+        # result.candidates; with nothing truncated, this order is the only place the ranking shows.
         selected = [
             (c, by_key[(c.subbrain_id, c.version)])
-            for c in result.candidates
+            for c in matching.in_rank_order(result.candidates, result.strategy)
             if c.selected and c.relevance >= result.tau and (c.subbrain_id, c.version) in by_key
         ]
         if not selected:
@@ -665,7 +670,7 @@ class Service:
         host_entry = (
             {**_subbrain_view(host_sv), "withheld": False}
             if host_sv is not None
-            else _withheld(canal.host_subbrain_id, canal.host_version)
+            else _withheld(self._store.withheld_ref(canal.id, canal.host_subbrain_id))
         )
         # Member scores are derived from the host too: distance from the host's domains, and in whole_host mode the
         # terms (so relevance and matched_terms) are the host's own tags and labels. A withheld host hides those.
@@ -674,30 +679,50 @@ class Service:
             host_derived = {"distance"}
             if canal.query_mode_used == QueryMode.WHOLE_HOST:
                 host_derived |= {"relevance", "matched_terms"}
-        members: list[dict[str, Any]] = []
-        entries: list[dict[str, Any]] = []
+        visible: list[tuple[CanalMember, dict[str, Any], dict[str, Any]]] = []
+        withheld_refs: list[str] = []
         for m in canal.members:
             sv = self._visible_in_canal(user, ctx_subbrains, m.subbrain_id, m.version, m.owner_id)
             if sv is None:
-                # Withheld: ids only, nothing derived from its content, not even scores (NEVER-02).
-                members.append(_withheld(m.subbrain_id, m.version))
-                entries.append(_withheld(m.subbrain_id, m.version))
+                # Withheld: the opaque ref only, no scores and no rank position (see the ordering below).
+                withheld_refs.append(self._store.withheld_ref(canal.id, m.subbrain_id))
                 continue
             scores = {k: v for k, v in (("relevance", m.relevance), ("distance", m.distance)) if k not in host_derived}
-            members.append({"subbrain_id": m.subbrain_id, "version": m.version, "withheld": False, **scores})
+            member = {"subbrain_id": m.subbrain_id, "version": m.version, "withheld": False, **scores}
             entry = {**_subbrain_view(sv), "withheld": False}
             if "matched_terms" not in host_derived:
                 # Terms of the host's query / host subbrain: another user's text for members (NEVER-09).
                 entry["matched_terms"] = list(m.matched_terms)
-            entries.append(entry)
+            visible.append((m, member, entry))
+        # canal.members is stored in rank order: score, then relevance, then the real subbrain_id. Kept as is, a
+        # withheld entry's position would bound its hidden score and, on a tie, show how its real id compares to
+        # others; that comparison is the same in every canal, so positions would pair withheld_refs across canals
+        # (NEVER-11 v.5). With a withheld host, the score order of visible members would also encode the hidden
+        # host-derived distance. So once anything is withheld from this viewer, order only by what this viewer is
+        # shown: visible members first, then withheld entries by their per-canal ref (an unlinkable permutation).
+        if host_sv is None:
+            if "relevance" in host_derived:
+                visible.sort(key=lambda v: v[0].subbrain_id)
+            else:
+                visible.sort(key=lambda v: (-v[0].relevance, v[0].subbrain_id))
+        # With the host shown, every input of the stored rank (relevance, distance, id, version) of a visible member
+        # is shown too, so the stored relative order of visible members tells this viewer nothing more.
+        withheld_refs.sort()
+        members = [member for _, member, _ in visible] + [_withheld(ref) for ref in withheld_refs]
+        entries = [entry for _, _, entry in visible] + [_withheld(ref) for ref in withheld_refs]
+        # A withheld host's real id/version would link it across canals too (NEVER-11 v.5): its ref stands in.
+        host_ids: dict[str, Any] = (
+            {"host_subbrain_id": canal.host_subbrain_id, "host_version": canal.host_version}
+            if host_sv is not None
+            else {"host_withheld_ref": host_entry["withheld_ref"]}
+        )
         body: dict[str, Any] = {
             "ok": True,
             "canal_id": canal.id,
             "is_host": is_host,
             "canal": {
                 "id": canal.id,
-                "host_subbrain_id": canal.host_subbrain_id,
-                "host_version": canal.host_version,
+                **host_ids,
                 "query_mode_used": canal.query_mode_used.value,
                 "created_at": canal.created_at,
                 "members": members,

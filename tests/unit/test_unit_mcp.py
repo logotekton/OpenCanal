@@ -624,6 +624,35 @@ def test_match_explain_prints_candidates(
     assert service.calls[0][1:] == ("match_explain", {"query": "모듈러", "host_subbrain_id": "sb_a", "query_mode": "topic"})
 
 
+def test_match_explain_table_shows_score_and_ranks_by_the_strategy(
+    fake_runtime: tuple[FakeStore, dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The envelope lists candidates in relevance order (models.py); the table ranks them as the strategy does.
+    close = {
+        "subbrain_id": "sb_a2", "version": 1, "owner_id": "user_e", "relevance": 0.56, "distance": 0.0, "score": 0.56,
+        "matched_terms": ["모듈러"], "selected": True, "reason": "selected_score",
+    }
+    far = dict(close, subbrain_id="sb_b", owner_id="user_b", relevance=0.4, distance=1.0, score=0.7)
+    below = dict(close, subbrain_id="sb_d", owner_id="user_d", relevance=0.0, distance=1.0, score=0.0,
+                 matched_terms=[], selected=False, reason="below_tau")
+    envelope = {"ok": True, "query_mode_used": "topic", "strategy": "relevance_with_distance_bonus", "tau": 0.2,
+                "query_terms": ["모듈러"], "truncated": False, "candidates": [close, far, below]}
+    fake_runtime[1]["service"] = ExplainService(envelope)
+    argv = ["match-explain", "--token", PRO, "--query", "모듈러", "--host-subbrain-id", "sb_a"]
+    assert cli.main(argv) == 0
+    lines = capsys.readouterr().out.splitlines()
+    header = next(line for line in lines if line.startswith("rank"))
+    assert header.split()[:7] == ["rank", "subbrain", "title", "owner", "relevance", "distance", "score"]
+    rows = [line for line in lines if line[:1].isdigit()]
+    assert [row.split()[1] for row in rows] == ["sb_b@v1", "sb_a2@v1", "sb_d@v1"]
+    assert rows[0].split()[0] == "1" and "0.700" in rows[0] and "0.560" in rows[1]
+
+    envelope["strategy"] = "relevance_only"
+    assert cli.main(argv) == 0
+    rows = [line for line in capsys.readouterr().out.splitlines() if line[:1].isdigit()]
+    assert [row.split()[1] for row in rows] == ["sb_a2@v1", "sb_b@v1", "sb_d@v1"]
+
+
 def test_match_explain_bad_token_is_unauthorized(
     fake_runtime: tuple[FakeStore, dict[str, Any]], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

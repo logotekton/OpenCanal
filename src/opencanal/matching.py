@@ -2,14 +2,15 @@
 
 Owner: Builder M. Pure functions over already-visible candidates (the store filters visibility).
 
-The owner has not fixed the member-selection criterion yet (D-003), so selection strategies are
-pluggable (`STRATEGIES`) and every scoring decision can be explained term by term
-(`relevance_evidence`) for `match_explain`.
+The default strategy is `relevance_with_distance_bonus` (ORACLE v.5 MUST-M2, owner decision "먼 분야에
+가산점"). The criterion may still change with the owner's research (D-003), so selection strategies stay
+pluggable (`STRATEGIES`) and every scoring decision can be explained term by term (`relevance_evidence`)
+and by its `score` for `match_explain`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Literal, Optional, Protocol
 
 from pydantic import BaseModel
@@ -23,6 +24,7 @@ FIELDS: tuple[str, ...] = ("tags", "label", "summary")
 
 # Reason codes on MatchCandidate.reason (shown to the owner by match_explain).
 REASON_SELECTED = "selected_relevance"
+REASON_SELECTED_SCORE = "selected_score"  # relevance_with_distance_bonus
 REASON_BELOW_TAU = "below_tau"
 REASON_TRUNCATED = "truncated_by_limit"
 REASON_DIVERSITY = "selected_diversity"
@@ -70,15 +72,19 @@ def host_terms(host: SubbrainVersion, cfg: MatchingConfig) -> list[str]:
 def candidate_fields(candidate: SubbrainVersion, cfg: MatchingConfig) -> dict[str, list[str]]:
     """Token lists per field. No stopword removal on candidates (a stopword never reaches the terms).
 
-    tags    = node tags + subbrain domains
-    label   = node labels + document title
-    summary = node summaries + edge summaries
+    tags    = node tags
+    label   = node labels
+    summary = node summaries
+
+    Only the nodes' tags, labels and summaries are relevance fields (stub docstring, config field_weights,
+    DECISIONS D-003 "태그·라벨·요약"). The document title and domains are not: domains already drive the distance,
+    and scoring them would lift exactly the close-field candidates the MUST-M2 bonus is meant to outrank.
     """
-    doc = candidate.document
+    nodes = candidate.document.nodes
     return {
-        "tags": _tokens([tag for node in doc.nodes for tag in node.tags] + list(doc.domains), cfg),
-        "label": _tokens([node.label for node in doc.nodes] + [doc.title], cfg),
-        "summary": _tokens([node.summary for node in doc.nodes] + [edge.summary for edge in doc.edges], cfg),
+        "tags": _tokens([tag for node in nodes for tag in node.tags], cfg),
+        "label": _tokens([node.label for node in nodes], cfg),
+        "summary": _tokens([node.summary for node in nodes], cfg),
     }
 
 
@@ -175,7 +181,12 @@ def domain_distance(host: SubbrainVersion, candidate: SubbrainVersion) -> float:
 
 class SelectionStrategy(Protocol):
     def __call__(self, ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
-        """Set `selected` and `reason` on every candidate of `ranked` (sorted best first). In place."""
+        """Set `selected` and `reason` on every candidate of `ranked`. In place.
+
+        `ranked` arrives sorted by relevance (`_relevance_rank`) with `score` already filled. A strategy must not
+        reorder the list: it is MatchResult.candidates, documented as "sorted by relevance desc" (models.py). A
+        strategy that ranks differently works on a sorted copy and registers its key in RANK_KEYS.
+        """
 
 
 def _eligible(candidate: MatchCandidate, tau: float) -> bool:
@@ -183,8 +194,28 @@ def _eligible(candidate: MatchCandidate, tau: float) -> bool:
     return candidate.relevance >= tau and candidate.relevance > 0
 
 
-def select_relevance_only(ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
-    """Top max_members candidates with relevance >= tau, in rank order."""
+def candidate_score(candidate: MatchCandidate, *, tau: float, distance_bonus: float) -> float:
+    """MUST-M2 score = relevance + distance_bonus * distance for eligible candidates, 0.0 otherwise.
+
+    Gated on the same eligibility as selection, so the bonus never lifts a below-tau or zero-evidence
+    candidate (MUST-M2 forbidden result).
+    """
+    if not _eligible(candidate, tau):
+        return 0.0
+    return round(candidate.relevance + distance_bonus * candidate.distance, 4)
+
+
+def _relevance_rank(c: MatchCandidate) -> tuple:
+    return (-c.relevance, c.subbrain_id, c.version)
+
+
+def _score_rank(c: MatchCandidate) -> tuple:
+    # MUST-M2: score, then relevance, then subbrain_id (version only makes the order total).
+    return (-c.score, -c.relevance, c.subbrain_id, c.version)
+
+
+def _select_top(ranked: list[MatchCandidate], *, max_members: int, tau: float, reason: str) -> None:
+    """Top max_members eligible candidates in list order get `reason`; the other eligible ones are truncated."""
     limit = max(0, max_members)
     taken = 0
     for c in ranked:
@@ -193,20 +224,16 @@ def select_relevance_only(ranked: list[MatchCandidate], *, max_members: int, tau
             c.reason = REASON_BELOW_TAU if c.relevance < tau else REASON_NO_MATCH
         elif taken < limit:
             c.selected = True
-            c.reason = REASON_SELECTED
+            c.reason = reason
             taken += 1
         else:
             c.selected = False
             c.reason = REASON_TRUNCATED
 
 
-def select_relevance_plus_diversity(ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
-    """relevance_only, then guarantee one domain-disjoint member when one was cut by the limit (PROV-M2).
-
-    If no selected member has distance == 1.0 and a truncated candidate (relevance >= tau) does,
-    the best such candidate replaces the lowest-ranked selected member.
-    """
-    select_relevance_only(ranked, max_members=max_members, tau=tau)
+def _guarantee_diversity(ranked: list[MatchCandidate]) -> None:
+    """If no selected member has distance == 1.0 and a truncated (eligible) candidate does, the first such
+    candidate in list order replaces the last selected member in list order."""
     selected = [c for c in ranked if c.selected]
     if not selected or any(c.distance == MAX_DISTANCE for c in selected):
         return
@@ -220,10 +247,52 @@ def select_relevance_plus_diversity(ranked: list[MatchCandidate], *, max_members
     diverse.reason = REASON_DIVERSITY
 
 
+def select_relevance_only(ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
+    """Top max_members candidates with relevance >= tau, in relevance order."""
+    _select_top(ranked, max_members=max_members, tau=tau, reason=REASON_SELECTED)
+
+
+def select_relevance_plus_diversity(ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
+    """relevance_only, then guarantee one domain-disjoint member when one was cut by the limit (PROV-M2).
+
+    If no selected member has distance == 1.0 and a truncated candidate (relevance >= tau) does,
+    the best such candidate replaces the lowest-ranked selected member.
+    """
+    select_relevance_only(ranked, max_members=max_members, tau=tau)
+    _guarantee_diversity(ranked)
+
+
+def select_relevance_with_distance_bonus(ranked: list[MatchCandidate], *, max_members: int, tau: float) -> None:
+    """MUST-M2 (v.5): eligible = relevance >= tau; rank by score, then relevance, then subbrain_id.
+
+    Selects the top max_members eligible candidates in `_score_rank` order ("selected_score"), then applies the
+    same diversity guarantee as relevance_plus_diversity over that order. `ranked` itself keeps its relevance
+    order (the candidates are mutated, the list is not). Below-tau candidates have score 0.0 and are never
+    selected, whatever their distance.
+    """
+    by_score = sorted(ranked, key=_score_rank)
+    _select_top(by_score, max_members=max_members, tau=tau, reason=REASON_SELECTED_SCORE)
+    _guarantee_diversity(by_score)
+
+
 STRATEGIES: dict[str, SelectionStrategy] = {
+    "relevance_with_distance_bonus": select_relevance_with_distance_bonus,
     "relevance_plus_diversity": select_relevance_plus_diversity,
     "relevance_only": select_relevance_only,
 }
+
+# The order each strategy ranks candidates in. MatchResult.candidates is always in relevance order (models.py),
+# so callers that present a ranking (canal_open members, the match-explain table) sort with this key.
+RANK_KEYS: dict[str, Callable[[MatchCandidate], tuple]] = {
+    "relevance_with_distance_bonus": _score_rank,
+    "relevance_plus_diversity": _relevance_rank,
+    "relevance_only": _relevance_rank,
+}
+
+
+def in_rank_order(candidates: Iterable[MatchCandidate], strategy: str) -> list[MatchCandidate]:
+    """`candidates` sorted the way `strategy` ranks them (relevance order for an unknown name)."""
+    return sorted(candidates, key=RANK_KEYS.get(strategy, _relevance_rank))
 
 
 def resolve_strategy(strategy: Optional[str], cfg: MatchingConfig) -> str:
@@ -263,10 +332,14 @@ def match(
 
     AUTO -> TOPIC if query_terms() is non-empty else WHOLE_HOST.
     Never select relevance < tau (MUST-M1). Never select candidates owned by host.owner_id (MUST-M4).
+    Every candidate gets `score` = round(relevance + cfg.distance_bonus * distance, 4) if eligible, else 0.0.
+    relevance_with_distance_bonus (default, MUST-M2): top max_members by (score, relevance, subbrain_id),
+    then the diversity swap below over that order.
     relevance_only: top max_members by relevance (tie-break subbrain_id).
     relevance_plus_diversity: same, then if no selected member has distance == 1.0 and an unselected
     candidate with distance == 1.0 and relevance >= tau exists, swap it in for the lowest selected.
-    Deterministic for identical input.
+    Every strategy lists candidates in relevance order (models.py); `in_rank_order` gives the strategy's own
+    ranking. Deterministic for identical input.
     """
     strategy_name = resolve_strategy(strategy, cfg)
     select = STRATEGIES[strategy_name]
@@ -293,7 +366,9 @@ def match(
                 reason="",
             )
         )
-    scored.sort(key=lambda c: (-c.relevance, c.subbrain_id, c.version))
+    for c in scored:
+        c.score = candidate_score(c, tau=cfg.tau, distance_bonus=cfg.distance_bonus)
+    scored.sort(key=_relevance_rank)
 
     select(scored, max_members=max_members, tau=cfg.tau)
 

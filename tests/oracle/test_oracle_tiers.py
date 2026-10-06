@@ -135,6 +135,8 @@ F_DOC = {
     ],
     "edges": [{"id": "f-e1", "source": "f-n1", "target": "f-n2", "relation": "covers"}],
 }  # Q-01 relevance by the config formula: 현장(tag 1.0) + 건축(label 0.8) = 1.8 / 5 = 0.36 < A2, B, C
+# Oracle v.5 MUST-M2 score = relevance + 0.3 * distance: F 0.36 + 0.3 * 1.0 = 0.66 (domain 건설 안전 shares nothing
+# with A) > A2 0.56 + 0 = 0.56; B and C 0.70.
 
 
 def test_must_t1_members_truncated_by_relevance_and_flagged(seeded: World):
@@ -148,8 +150,10 @@ def test_must_t1_members_truncated_by_relevance_and_flagged(seeded: World):
     ids = member_ids(env)
     assert len(ids) == limit
     assert env["truncated"] is True
-    assert f["subbrain_id"] not in ids, "the lowest-relevance candidate is the one cut"
-    assert {seeded.sid("A2"), seeded.sid("B"), seeded.sid("C")} == set(ids)
+    # Oracle v.5 MUST-M2 (default strategy): eligible candidates are chosen by score, so the lowest-SCORE
+    # candidate is the one cut — A2 (0.56), not F (0.66). MUST-T1's "상위 관련도 순" predates v.5.
+    assert seeded.sid("A2") not in ids, "the lowest-score candidate (MUST-M2) is the one cut"
+    assert {f["subbrain_id"], seeded.sid("B"), seeded.sid("C")} == set(ids)
     for m in env["members"]:
         assert m["relevance"] >= seeded.cfg.matching.tau
 

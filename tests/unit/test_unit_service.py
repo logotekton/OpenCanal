@@ -193,6 +193,13 @@ class FakeStore:
             raise self._nf()
         return canal
 
+    @staticmethod
+    def withheld_ref(canal_id, subbrain_id) -> str:
+        # Stand-in for the keyed HMAC: opaque, per canal, and never containing the real id.
+        import hashlib
+
+        return "wr_" + hashlib.sha256(f"fake|{canal_id}|{subbrain_id}".encode()).hexdigest()[:22]
+
     def canal_context(self, canal_id) -> CanalContext:
         canal = self.canals[canal_id]
         subs = {(canal.host_subbrain_id, canal.host_version): self._sv(canal.host_subbrain_id, canal.host_version)}
@@ -582,14 +589,15 @@ def test_canal_get_participants_and_withheld(env):
     cid, ids, store, svc = opened["canal_id"], env["ids"], env["store"], env["svc"]
     assert svc.dispatch(env["d"], "canal_get", {"canal_id": cid})["error"] == {"code": "NOT_FOUND", "message": NOT_FOUND_MESSAGE}
     store.subbrains[ids["B"]]["visibility"] = Visibility.PRIVATE
+    ref = store.withheld_ref(cid, ids["B"])
     for viewer in (env["a"], env["c"]):
         got = svc.dispatch(viewer, "canal_get", {"canal_id": cid})
         assert got["ok"]
-        entry = next(s for s in got["untrusted_data"]["subbrains"] if s["subbrain_id"] == ids["B"])
-        assert entry == {"subbrain_id": ids["B"], "version": 1, "withheld": True}
-        member = next(m for m in got["canal"]["members"] if m["subbrain_id"] == ids["B"])
-        assert member["withheld"] is True and "owner_display" not in member
-        assert "B 노드0" not in json.dumps(got, ensure_ascii=False)
+        # NEVER-11 v.5: no real id or version of the withheld subbrain, only the canal-scoped ref.
+        assert [s for s in got["untrusted_data"]["subbrains"] if s["withheld"]] == [{"withheld": True, "withheld_ref": ref}]
+        assert [m for m in got["canal"]["members"] if m["withheld"]] == [{"withheld": True, "withheld_ref": ref}]
+        text = json.dumps(got, ensure_ascii=False)
+        assert "B 노드0" not in text and ids["B"] not in text
     own = svc.dispatch(env["b"], "canal_get", {"canal_id": cid})
     entry = next(s for s in own["untrusted_data"]["subbrains"] if s["subbrain_id"] == ids["B"])
     assert entry["withheld"] is False and entry["document"]["title"] == "B"
@@ -829,17 +837,23 @@ def test_canal_get_host_turned_private_is_withheld_from_members_only(env):
     svc, store, ids = env["svc"], env["store"], env["ids"]
     cid = _open(env)["canal_id"]
     store.subbrains[ids["A"]]["visibility"] = Visibility.PRIVATE
+    ref = store.withheld_ref(cid, ids["A"])
     for viewer in (env["b"], env["c"]):
         got = svc.dispatch(viewer, "canal_get", {"canal_id": cid})
-        assert got["untrusted_data"]["host"] == {"subbrain_id": ids["A"], "version": 1, "withheld": True}
+        assert got["untrusted_data"]["host"] == {"withheld": True, "withheld_ref": ref}
+        # The canal summary stops echoing the host's real id/version too (NEVER-11 v.5).
+        assert got["canal"]["host_withheld_ref"] == ref
+        assert "host_subbrain_id" not in got["canal"] and "host_version" not in got["canal"]
         text = json.dumps(got, ensure_ascii=False)
-        assert "A 노드0" not in text and "에이" not in text and "건축" not in text
+        assert "A 노드0" not in text and "에이" not in text and "건축" not in text and ids["A"] not in text
         for m in got["canal"]["members"]:
             # distance compares with the host's domains: host-derived, hidden (EXP-5).
             assert "distance" not in m and "relevance" in m
     own = svc.dispatch(env["a"], "canal_get", {"canal_id": cid})
     assert own["untrusted_data"]["host"]["withheld"] is False
     assert own["untrusted_data"]["host"]["document"]["title"] == "A"
+    assert own["canal"]["host_subbrain_id"] == ids["A"] and own["canal"]["host_version"] == 1
+    assert "host_withheld_ref" not in own["canal"] and ref not in json.dumps(own)
     assert all("distance" in m for m in own["canal"]["members"])
 
 
@@ -851,15 +865,18 @@ def test_canal_get_withheld_rows_carry_nothing_content_derived(env):
     store.subbrains[ids["A"]]["visibility"] = Visibility.PRIVATE
     store.subbrains[ids["C"]]["visibility"] = Visibility.PRIVATE
     got = svc.dispatch(env["b"], "canal_get", {"canal_id": opened["canal_id"]})
-    rows = {m["subbrain_id"]: m for m in got["canal"]["members"]}
-    assert rows[ids["C"]] == {"subbrain_id": ids["C"], "version": 1, "withheld": True}
+    c_ref = store.withheld_ref(opened["canal_id"], ids["C"])
+    rows = {m.get("subbrain_id", m.get("withheld_ref")): m for m in got["canal"]["members"]}
+    assert rows[c_ref] == {"withheld": True, "withheld_ref": c_ref}
     # B is B's own, but its scores were computed from A's (now private) tags in whole_host mode.
     assert rows[ids["B"]] == {"subbrain_id": ids["B"], "version": 1, "withheld": False}
-    b_entry = next(s for s in got["untrusted_data"]["subbrains"] if s["subbrain_id"] == ids["B"])
+    b_entry = next(s for s in got["untrusted_data"]["subbrains"] if s.get("subbrain_id") == ids["B"])
     assert b_entry["withheld"] is False and "matched_terms" not in b_entry
-    c_entry = next(s for s in got["untrusted_data"]["subbrains"] if s["subbrain_id"] == ids["C"])
-    assert c_entry == {"subbrain_id": ids["C"], "version": 1, "withheld": True}
-    assert "공차" not in json.dumps(got, ensure_ascii=False)  # an A-only tag
+    c_entry = next(s for s in got["untrusted_data"]["subbrains"] if s.get("withheld_ref") == c_ref)
+    assert c_entry == {"withheld": True, "withheld_ref": c_ref}
+    text = json.dumps(got, ensure_ascii=False)
+    assert "공차" not in text  # an A-only tag
+    assert ids["C"] not in text and ids["A"] not in text
     # The host itself still sees every score of the members that are visible to it.
     host = svc.dispatch(env["a"], "canal_get", {"canal_id": opened["canal_id"]})
     b_row = next(m for m in host["canal"]["members"] if m["subbrain_id"] == ids["B"])

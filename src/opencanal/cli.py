@@ -8,6 +8,7 @@ Paths: --db (env OPENCANAL_DB, default data/opencanal.db), --key-file (env OPENC
 default data/keys/master.key), --config-dir (env OPENCANAL_CONFIG_DIR, default config/). Relative
 defaults resolve against the repository root, so the same DB is used from any working directory.
 Plaintext MCP tokens are printed once, when created; only their hashes are stored.
+Directories created for data, keys and backups are 0700; DB, key and backup files are 0600 (MUST-E1, MUST-E3).
 """
 
 from __future__ import annotations
@@ -28,9 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import crypto
+from pydantic import ValidationError
+
+from . import crypto, matching
 from .config import DEFAULT_DATA_DIR, REPO_ROOT, load_config
-from .models import OpenCanalError, QueryMode, Tier, User, Visibility
+from .models import MatchCandidate, OpenCanalError, QueryMode, Tier, User, Visibility
 from .service import Service
 from .store import Store
 
@@ -80,7 +83,7 @@ def _open_store(args: argparse.Namespace, *, must_exist: bool = False) -> Iterat
     if str(db) != ":memory:":
         if must_exist and not db.exists():
             raise CliError(f"DB가 없습니다: {db} (먼저 `opencanal init-db`)")
-        db.parent.mkdir(parents=True, exist_ok=True)
+        crypto.make_private_dirs(db.parent)  # 0700 for what we create (MUST-E3); Store pins the DB files to 0600
     key = _load_key(args)
     store = Store(db, master_key=key)
     try:
@@ -165,7 +168,7 @@ def _print_token(user: User, token: str) -> None:
 def cmd_init_db(args: argparse.Namespace) -> int:
     with _open_store(args):
         pass
-    print(f"DB 준비됨: {_db_path(args)}")
+    print(f"DB 준비됨: {_db_path(args)} (권한 0600)")
     if os.environ.get("OPENCANAL_MASTER_KEY"):
         print("마스터 키: 환경변수 OPENCANAL_MASTER_KEY")
     else:
@@ -368,6 +371,16 @@ def _find_candidates(envelope: dict[str, Any]) -> list[dict[str, Any]]:
     return [c for c in found if isinstance(c, dict)] if isinstance(found, list) else []
 
 
+def _in_rank_order(candidates: list[dict[str, Any]], strategy: Any) -> list[dict[str, Any]]:
+    """Candidate rows in the strategy's ranking (MUST-M2: by score). The envelope lists them in relevance order."""
+    try:
+        parsed = [MatchCandidate.model_validate(c) for c in candidates]
+    except ValidationError:
+        return candidates  # unexpected shape: keep the server's order
+    rows = {id(m): c for m, c in zip(parsed, candidates)}
+    return [rows[id(m)] for m in matching.in_rank_order(parsed, str(strategy or ""))]
+
+
 def cmd_match_explain(args: argparse.Namespace) -> int:
     token = (args.token or os.environ.get("OPENCANAL_TOKEN") or "").strip()
     if not token:
@@ -395,24 +408,27 @@ def cmd_match_explain(args: argparse.Namespace) -> int:
             about[(entry.get("subbrain_id"), entry.get("version"))] = entry
             about.setdefault((entry.get("subbrain_id"), None), entry)
     rows = []
-    for c in candidates:
+    for rank, c in enumerate(_in_rank_order(candidates, _pick(envelope, "strategy")), start=1):
         info = about.get((c.get("subbrain_id"), c.get("version"))) or about.get((c.get("subbrain_id"), None)) or {}
         display = c.get("owner_display") or info.get("owner_display")
         owner_id = c.get("owner_id", "")
         rows.append(
             [
+                rank,
                 f"{c.get('subbrain_id', '')}@v{c.get('version', '')}",
                 c.get("title") or info.get("title", ""),
                 f"{display} ({owner_id})" if display else owner_id,
                 c.get("relevance"),
                 c.get("distance"),
+                c.get("score"),
                 c.get("matched_terms", []),
                 "yes" if c.get("selected") else "no",
                 c.get("reason", ""),
             ]
         )
     print()
-    print(format_table(["subbrain", "title", "owner", "relevance", "distance", "matched_terms", "selected", "reason"], rows))
+    headers = ["rank", "subbrain", "title", "owner", "relevance", "distance", "score", "matched_terms", "selected", "reason"]
+    print(format_table(headers, rows))
     if not candidates:
         print("(후보 없음)")
     return 0
@@ -437,7 +453,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
     with _open_store(args, must_exist=True) as (store, key):
         snapshot = store.snapshot_bytes()
     blob = crypto.encrypt_backup(key, snapshot)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    crypto.make_private_dirs(out_dir)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = _write_private_file(out_dir, f"opencanal-{stamp}", ".db.enc", blob)
     print(f"백업 완료: {path} ({len(blob)} bytes, 권한 0600, 마스터 키로 암호화)")
@@ -548,7 +564,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
     except Exception as exc:  # Fernet InvalidToken is not a ValueError
         raise CliError("백업을 복호화할 수 없습니다 (다른 키이거나 손상된 파일)") from exc
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        crypto.make_private_dirs(target.parent)
     except OSError as exc:
         raise CliError(f"복원 경로를 만들 수 없습니다: {target.parent} ({exc.strerror or exc})") from exc
     _restore_db_file(target, data)

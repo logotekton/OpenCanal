@@ -13,15 +13,20 @@ from opencanal.matching import (
     REASON_DIVERSITY,
     REASON_NO_MATCH,
     REASON_SELECTED,
+    REASON_SELECTED_SCORE,
     REASON_TRUNCATED,
+    STRATEGIES,
+    candidate_score,
     domain_distance,
     host_terms,
+    in_rank_order,
     match,
     query_terms,
     relevance_evidence,
     score_relevance,
 )
 from opencanal.models import (
+    MatchCandidate,
     QueryMode,
     SubbrainDocument,
     SubbrainEdge,
@@ -33,6 +38,14 @@ from opencanal.models import (
 Q01 = "모듈러 건축의 현장 조립 오류를 줄일 아이디어"
 Q02 = "내 두뇌를 평가해줘"
 Q03 = "제빵 반죽 발효 온도"
+
+BONUS = "relevance_with_distance_bonus"
+ALL_STRATEGIES = (BONUS, "relevance_plus_diversity", "relevance_only")
+SELECTED_REASON = {
+    BONUS: REASON_SELECTED_SCORE,
+    "relevance_plus_diversity": REASON_SELECTED,
+    "relevance_only": REASON_SELECTED,
+}
 
 
 @pytest.fixture(scope="module")
@@ -84,11 +97,11 @@ HOST = _sv(
 OWN_OTHER = _sv(  # host owner's second subbrain: never a candidate
     "A-own", "user_a", domains=["건축"], nodes=[_node("o1", "조립 오류 사례", ("조립", "오류", "모듈러", "현장"))]
 )
-A2 = _sv(  # close to host (same domains), shares 모듈러 + 건축(domain) + 현장
+A2 = _sv(  # close to host (same domains), shares the tags 모듈러 + 건축 + 현장 (+ bim for whole_host)
     "A2",
     "user_e",
     domains=["건축", "BIM"],
-    nodes=[_node("e1", "모듈러 유닛 운송", ("모듈러", "운송", "현장"))],
+    nodes=[_node("e1", "모듈러 유닛 운송", ("모듈러", "운송", "현장", "건축", "bim"))],
 )
 B = _sv(
     "B",
@@ -123,9 +136,31 @@ P = _sv(  # private, shares Q-01 terms: must never surface
 )
 ALL = [HOST, OWN_OTHER, A2, B, C, D, P]
 
+# Extra candidates for the MUST-M2 (v.5) strategy. Relevance is for Q01's 5 terms (denominator 5).
+NEAR = _sv(  # 모듈러 현장 조립 오류 건축 tags: relevance 1.0, distance 0
+    "N", "user_n", domains=["건축", "BIM"], nodes=[_node("n", "무관", ("모듈러", "현장", "조립", "오류", "건축"))]
+)
+A3 = _sv(  # 모듈러 현장 건축 tags: relevance 0.6, distance 0.5 (shares 건축 of 건축/BIM)
+    "A3", "user_f", domains=["건축"], nodes=[_node("n", "무관", ("모듈러", "현장", "건축"))]
+)
+FAR_LOW = _sv(  # 조립 tag 1.0 + 오류 summary 0.5: relevance 0.3, distance 1 -> score 0.6
+    "A-far", "user_g", domains=["z"], nodes=[_node("n", "무관", ("조립",), summary="오류")]
+)
+NEAR_HIGH = _sv(  # 모듈러 현장 건축 tags: relevance 0.6, distance 0 -> score 0.6 (same score as FAR_LOW)
+    "Z-near", "user_h", domains=["건축", "BIM"], nodes=[_node("n", "무관", ("모듈러", "현장", "건축"))]
+)
+WEAK_FAR = _sv(  # 오류 summary only: relevance 0.1 < tau, distance 1 (bonus would lift it to 0.4)
+    "W", "user_w", domains=["z"], nodes=[_node("n", "무관", summary="오류")]
+)
+
 
 def _by_id(result, subbrain_id):
     return next(c for c in result.candidates if c.subbrain_id == subbrain_id)
+
+
+def _ranked(result):
+    """Candidates in the strategy's own ranking (result.candidates is always in relevance order)."""
+    return in_rank_order(result.candidates, result.strategy)
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +253,8 @@ def test_score_exact_beats_substring_in_lower_field(cfg):
     assert score_relevance(["조립"], cand, cfg) == (0.8, ["조립"])
 
 
-def test_score_counts_domains_title_and_edge_summaries(cfg):
+def test_score_ignores_domains_title_and_edge_summaries(cfg):
+    # Relevance fields are the nodes' tags, labels and summaries only (stub docstring, D-003, ORACLE v.5 tests).
     cand = _sv(
         "X",
         "u",
@@ -228,6 +264,12 @@ def test_score_counts_domains_title_and_edge_summaries(cfg):
         edges=[SubbrainEdge(source="n1", target="n2", summary="오조작 설명")],
     )
     evidence = {e.term: e for e in relevance_evidence(["게임", "블록", "오조작"], cand, cfg)}
+    assert all((e.field, e.weight) == (None, 0.0) for e in evidence.values()), evidence
+    assert score_relevance(["게임", "블록", "오조작"], cand, cfg) == (0.0, [])
+    same_words_on_a_node = _sv(
+        "Y", "u", domains=["z"], nodes=[_node("n1", "블록", ("게임",), summary="오조작"), _node("n2", "무관2")]
+    )
+    evidence = {e.term: e for e in relevance_evidence(["게임", "블록", "오조작"], same_words_on_a_node, cfg)}
     assert (evidence["게임"].field, evidence["게임"].weight) == ("tags", 1.0)
     assert (evidence["블록"].field, evidence["블록"].weight) == ("label", 0.8)
     assert (evidence["오조작"].field, evidence["오조작"].weight) == ("summary", 0.5)
@@ -300,15 +342,17 @@ def test_match_q01_topic_excludes_host_own_private_and_irrelevant(cfg):
     result = match(Q01, HOST, ALL, max_members=5, cfg=cfg)
     assert result.query_mode_used is QueryMode.TOPIC
     assert result.query_terms == ["모듈러", "건축", "현장", "조립", "오류"]
-    assert result.strategy == "relevance_plus_diversity"
+    assert result.strategy == BONUS  # v.5 default (config)
     assert result.tau == cfg.tau
-    ids = [c.subbrain_id for c in result.candidates]
-    assert ids == ["A2", "B", "C", "D"]  # host, own, private P never listed
+    # host, own, private P never listed; candidates are listed in relevance order (models.py)
+    assert [c.subbrain_id for c in result.candidates] == ["A2", "B", "C", "D"]
+    # distant B·C (0.4 + 0.3) rank above close A2 (0.6) (MUST-M2)
+    assert [(c.subbrain_id, c.score) for c in _ranked(result)] == [("B", 0.7), ("C", 0.7), ("A2", 0.6), ("D", 0.0)]
     assert {c.subbrain_id for c in result.selected} == {"A2", "B", "C"}
     d = _by_id(result, "D")
     assert (d.selected, d.reason, d.relevance, d.matched_terms) == (False, REASON_BELOW_TAU, 0.0, [])
     b = _by_id(result, "B")
-    assert (b.relevance, b.distance, b.matched_terms, b.reason) == (0.4, 1.0, ["조립", "오류"], REASON_SELECTED)
+    assert (b.relevance, b.distance, b.matched_terms, b.reason) == (0.4, 1.0, ["조립", "오류"], REASON_SELECTED_SCORE)
     assert _by_id(result, "A2").relevance == 0.6  # 모듈러 + 건축(domain) + 현장
     assert all(c.relevance >= cfg.tau and c.matched_terms for c in result.selected)
     assert result.truncated is False
@@ -320,11 +364,13 @@ def test_match_never_selects_below_tau_even_with_room(cfg):
     assert all(c.reason == REASON_BELOW_TAU for c in result.candidates)
 
 
-def test_match_tau_boundary_is_inclusive(cfg):
+@pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+def test_match_tau_boundary_is_inclusive(cfg, strategy):
     one = _sv("E", "user_x", domains=["z"], nodes=[_node("n", "무관", ("공차",))])
-    result = match("공차 모듈러 현장 조립 오류", HOST, [one], max_members=3, cfg=cfg)
+    result = match("공차 모듈러 현장 조립 오류", HOST, [one], max_members=3, cfg=cfg, strategy=strategy)
     assert _by_id(result, "E").relevance == 0.2
-    assert _by_id(result, "E").reason == REASON_SELECTED
+    assert _by_id(result, "E").reason == SELECTED_REASON[strategy]
+    assert _by_id(result, "E").score == 0.5  # 0.2 + 0.3 * 1.0
 
 
 def test_match_q02_auto_whole_host(cfg):
@@ -375,6 +421,8 @@ def test_match_diversity_swap_vs_relevance_only(cfg):
     only = match(Q01, HOST, [A2, B, C, D], max_members=1, cfg=cfg, strategy="relevance_only")
     assert [c.subbrain_id for c in only.selected] == ["A2"]
     assert {c.subbrain_id: c.reason for c in only.candidates}["B"] == REASON_TRUNCATED
+    # score is filled for explanation, but does not change this strategy's order
+    assert [(c.subbrain_id, c.score) for c in only.candidates] == [("A2", 0.6), ("B", 0.7), ("C", 0.7), ("D", 0.0)]
 
     div = match(Q01, HOST, [A2, B, C, D], max_members=1, cfg=cfg, strategy="relevance_plus_diversity")
     reasons = {c.subbrain_id: c.reason for c in div.candidates}
@@ -388,6 +436,7 @@ def test_match_diversity_swap_vs_relevance_only(cfg):
     assert div.truncated is True
     # candidates stay in relevance order after the swap
     assert [c.subbrain_id for c in div.candidates] == ["A2", "B", "C", "D"]
+    assert [c.score for c in div.candidates] == [0.6, 0.7, 0.7, 0.0]
 
 
 def test_match_default_strategy_comes_from_config(cfg):
@@ -398,36 +447,50 @@ def test_match_default_strategy_comes_from_config(cfg):
 
 
 def test_match_no_swap_when_selected_already_diverse(cfg):
-    result = match(Q01, HOST, [A2, B, C], max_members=2, cfg=cfg)
+    result = match(Q01, HOST, [A2, B, C], max_members=2, cfg=cfg, strategy="relevance_plus_diversity")
     assert {c.subbrain_id: c.reason for c in result.candidates} == {
         "A2": REASON_SELECTED,
         "B": REASON_SELECTED,
         "C": REASON_TRUNCATED,
     }
+    bonus = match(Q01, HOST, [A2, B, C], max_members=2, cfg=cfg)
+    assert [(c.subbrain_id, c.reason) for c in _ranked(bonus)] == [
+        ("B", REASON_SELECTED_SCORE),
+        ("C", REASON_SELECTED_SCORE),
+        ("A2", REASON_TRUNCATED),
+    ]
 
 
 def test_match_no_swap_when_diverse_candidate_below_tau(cfg):
-    near = _sv("A3", "user_f", domains=["건축"], nodes=[_node("n", "무관", ("모듈러", "현장"))])
-    result = match(Q01, HOST, [A2, near, D], max_members=1, cfg=cfg)
+    result = match(Q01, HOST, [A2, A3, D], max_members=1, cfg=cfg, strategy="relevance_plus_diversity")
     assert {c.subbrain_id: c.reason for c in result.candidates} == {
-        "A2": REASON_SELECTED,
+        "A2": REASON_SELECTED,  # relevance tie with A3 broken by subbrain_id
         "A3": REASON_TRUNCATED,
         "D": REASON_BELOW_TAU,  # distance 1.0 but never swapped in below tau
     }
+    bonus = match(Q01, HOST, [A2, A3, D], max_members=1, cfg=cfg)
+    assert [(c.subbrain_id, c.score, c.reason) for c in _ranked(bonus)] == [
+        ("A3", 0.75, REASON_SELECTED_SCORE),  # 0.6 + 0.3 * 0.5: partial distance, partial bonus
+        ("A2", 0.6, REASON_TRUNCATED),
+        ("D", 0.0, REASON_BELOW_TAU),  # distance 1.0 but never swapped in below tau
+    ]
 
 
-def test_match_zero_members(cfg):
-    result = match(Q01, HOST, [A2, B], max_members=0, cfg=cfg)
+@pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+def test_match_zero_members(cfg, strategy):
+    result = match(Q01, HOST, [A2, B], max_members=0, cfg=cfg, strategy=strategy)
     assert result.selected == []
     assert all(c.reason == REASON_TRUNCATED for c in result.candidates)
     assert result.truncated is True
 
 
-def test_match_zero_relevance_never_selected_even_if_tau_zero(cfg):
+@pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+def test_match_zero_relevance_never_selected_even_if_tau_zero(cfg, strategy):
     zero_cfg = cfg.model_copy(update={"tau": 0.0})
-    result = match(Q01, HOST, [B, D], max_members=5, cfg=zero_cfg)
+    result = match(Q01, HOST, [B, D], max_members=5, cfg=zero_cfg, strategy=strategy)
     assert [c.subbrain_id for c in result.selected] == ["B"]
     assert _by_id(result, "D").reason == REASON_NO_MATCH
+    assert _by_id(result, "D").score == 0.0  # distance 1.0, but zero evidence earns no bonus
 
 
 def test_match_unknown_strategy_raises(cfg):
@@ -437,18 +500,204 @@ def test_match_unknown_strategy_raises(cfg):
         match(Q01, HOST, [B], max_members=1, cfg=cfg.model_copy(update={"strategy": "nope"}))
 
 
-def test_match_is_deterministic_and_order_independent(cfg):
-    pool = [A2, B, C, D, P, OWN_OTHER, HOST]
-    baseline = match(Q01, HOST, pool, max_members=2, cfg=cfg).model_dump()
+@pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+def test_match_is_deterministic_and_order_independent(cfg, strategy):
+    pool = [A2, B, C, D, P, OWN_OTHER, HOST, NEAR, A3, FAR_LOW, NEAR_HIGH, WEAK_FAR]
+    baseline = match(Q01, HOST, pool, max_members=2, cfg=cfg, strategy=strategy).model_dump()
     rng = random.Random(7)
     for _ in range(10):
         shuffled = pool[:]
         rng.shuffle(shuffled)
-        assert match(Q01, HOST, shuffled, max_members=2, cfg=cfg).model_dump() == baseline
-    assert match(Q01, HOST, pool, max_members=2, cfg=cfg).model_dump() == baseline
+        assert match(Q01, HOST, shuffled, max_members=2, cfg=cfg, strategy=strategy).model_dump() == baseline
+    assert match(Q01, HOST, pool, max_members=2, cfg=cfg, strategy=strategy).model_dump() == baseline
 
 
 def test_match_does_not_mutate_inputs(cfg):
     before = [sv.model_dump() for sv in ALL]
     match(Q01, HOST, ALL, max_members=1, cfg=cfg)
     assert [sv.model_dump() for sv in ALL] == before
+
+
+# ---------------------------------------------------------------------------
+# relevance_with_distance_bonus (ORACLE v.5 MUST-M2)
+# ---------------------------------------------------------------------------
+
+
+def _order(result):
+    return [c.subbrain_id for c in _ranked(result)]
+
+
+def _reasons(result):
+    return [(c.subbrain_id, c.reason) for c in _ranked(result)]
+
+
+@pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+def test_candidates_are_listed_in_relevance_order_for_every_strategy(cfg, strategy):
+    # models.py: MatchResult.candidates is "sorted by relevance desc"; the ranking is in_rank_order's job.
+    pool = [A2, B, C, D, NEAR, A3, FAR_LOW, NEAR_HIGH, WEAK_FAR]
+    for max_members in (0, 1, 2, 10):
+        result = match(Q01, HOST, pool, max_members=max_members, cfg=cfg, strategy=strategy)
+        keys = [(-c.relevance, c.subbrain_id, c.version) for c in result.candidates]
+        assert keys == sorted(keys)
+
+
+def test_in_rank_order_follows_the_strategy(cfg):
+    result = match(Q01, HOST, [A2, B, C, D], max_members=10, cfg=cfg)
+    assert [c.subbrain_id for c in in_rank_order(result.candidates, BONUS)] == ["B", "C", "A2", "D"]
+    for name in ("relevance_plus_diversity", "relevance_only", "unknown"):
+        assert [c.subbrain_id for c in in_rank_order(result.candidates, name)] == ["A2", "B", "C", "D"]
+    assert [c.subbrain_id for c in result.candidates] == ["A2", "B", "C", "D"]  # not reordered in place
+
+
+def test_bonus_is_the_configured_default_and_registered(cfg):
+    assert cfg.strategy == BONUS
+    assert cfg.distance_bonus == 0.3
+    assert set(ALL_STRATEGIES) == set(STRATEGIES) == set(cfg.strategies_available)
+
+
+def test_candidate_score_formula_and_gate():
+    def cand(relevance, distance):
+        return MatchCandidate(
+            subbrain_id="x",
+            version=1,
+            owner_id="u",
+            relevance=relevance,
+            distance=distance,
+            matched_terms=["t"] if relevance else [],
+            selected=False,
+            reason="",
+        )
+
+    assert candidate_score(cand(0.4, 1.0), tau=0.2, distance_bonus=0.3) == 0.7  # rounded, not 0.7000000000000001
+    assert candidate_score(cand(0.6, 0.6667), tau=0.2, distance_bonus=0.3) == 0.8
+    assert candidate_score(cand(0.2, 0.0), tau=0.2, distance_bonus=0.3) == 0.2  # tau is inclusive
+    assert candidate_score(cand(0.1999, 1.0), tau=0.2, distance_bonus=0.3) == 0.0  # below tau: no bonus
+    assert candidate_score(cand(0.0, 1.0), tau=0.0, distance_bonus=0.3) == 0.0  # zero evidence: no bonus
+
+
+def test_bonus_same_relevance_distant_is_above(cfg):
+    # 건축 (tag 1.0) + 오류 (summary 0.5) = 0.3, distance 0
+    close = _sv("A-close", "user_y", domains=["건축", "BIM"], nodes=[_node("n", "무관", ("건축",), summary="오류")])
+    far = _sv("Z-far", "user_z", domains=["z"], nodes=[_node("n", "무관", ("조립",), summary="오류")])
+    result = match(Q01, HOST, [close, far], max_members=1, cfg=cfg)
+    # Same relevance 0.3; subbrain_id alone would put A-close first, the distance bonus puts Z-far first.
+    assert [(c.subbrain_id, c.relevance, c.distance, c.score) for c in _ranked(result)] == [
+        ("Z-far", 0.3, 1.0, 0.6),
+        ("A-close", 0.3, 0.0, 0.3),
+    ]
+    assert _reasons(result) == [("Z-far", REASON_SELECTED_SCORE), ("A-close", REASON_TRUNCATED)]
+
+
+def test_bonus_same_score_higher_relevance_is_above(cfg):
+    # FAR_LOW 0.3 + 0.3 == NEAR_HIGH 0.6 + 0; subbrain_id alone would put A-far first.
+    result = match(Q01, HOST, [FAR_LOW, NEAR_HIGH], max_members=1, cfg=cfg)
+    assert [(c.subbrain_id, c.relevance, c.score) for c in _ranked(result)] == [
+        ("Z-near", 0.6, 0.6),
+        ("A-far", 0.3, 0.6),
+    ]
+    # Z-near is selected but not distance 1.0, so the diversity guarantee swaps A-far in.
+    assert _reasons(result) == [("Z-near", REASON_DISPLACED), ("A-far", REASON_DIVERSITY)]
+
+
+def test_bonus_same_score_and_relevance_by_subbrain_id(cfg):
+    for pool in ([C, B], [B, C]):
+        result = match(Q01, HOST, pool, max_members=1, cfg=cfg)
+        assert _reasons(result) == [("B", REASON_SELECTED_SCORE), ("C", REASON_TRUNCATED)]
+
+
+def test_bonus_diversity_swap_replaces_lowest_ranked_selected(cfg):
+    one = match(Q01, HOST, [A2, C, B, NEAR], max_members=1, cfg=cfg)
+    assert [(c.subbrain_id, c.score) for c in _ranked(one)] == [("N", 1.0), ("B", 0.7), ("C", 0.7), ("A2", 0.6)]
+    assert _reasons(one) == [
+        ("N", REASON_DISPLACED),
+        ("B", REASON_DIVERSITY),  # best distance-1.0 eligible candidate
+        ("C", REASON_TRUNCATED),
+        ("A2", REASON_TRUNCATED),
+    ]
+    assert one.truncated is True
+
+    two = match(Q01, HOST, [A2, C, B, A3, NEAR], max_members=2, cfg=cfg)
+    assert [(c.subbrain_id, c.score) for c in _ranked(two)] == [
+        ("N", 1.0),
+        ("A3", 0.75),
+        ("B", 0.7),
+        ("C", 0.7),
+        ("A2", 0.6),
+    ]
+    assert _reasons(two) == [
+        ("N", REASON_SELECTED_SCORE),
+        ("A3", REASON_DISPLACED),  # lowest-ranked selected (distance 0.5 is not domain-disjoint)
+        ("B", REASON_DIVERSITY),
+        ("C", REASON_TRUNCATED),
+        ("A2", REASON_TRUNCATED),
+    ]
+
+
+@pytest.mark.parametrize("max_members", [1, 2, 10])
+def test_bonus_never_lifts_a_below_tau_candidate(cfg, max_members):
+    result = match(Q01, HOST, [A2, WEAK_FAR], max_members=max_members, cfg=cfg)
+    w = _by_id(result, "W")
+    assert (w.relevance, w.distance) == (0.1, 1.0)  # self-check: 0.1 + 0.3 would clear tau
+    assert (w.score, w.selected, w.reason) == (0.0, False, REASON_BELOW_TAU)
+    assert _reasons(result)[0] == ("A2", REASON_SELECTED_SCORE)  # no diversity swap with a below-tau candidate
+
+
+def test_bonus_whole_host_close_candidate_still_on_top(cfg):
+    result = match(Q02, HOST, ALL, max_members=5, cfg=cfg)
+    assert result.query_mode_used is QueryMode.WHOLE_HOST
+    assert [(c.subbrain_id, c.score) for c in _ranked(result)] == [("A2", 0.8), ("B", 0.7), ("C", 0.7), ("D", 0.0)]
+    assert {c.subbrain_id for c in result.selected} == {"A2", "B", "C"}
+
+
+def test_bonus_score_is_filled_for_every_strategy(cfg):
+    for strategy in ALL_STRATEGIES:
+        result = match(Q01, HOST, [A2, A3, B, D, WEAK_FAR], max_members=5, cfg=cfg, strategy=strategy)
+        assert {c.subbrain_id: c.score for c in result.candidates} == {
+            "A2": 0.6,
+            "A3": 0.75,
+            "B": 0.7,
+            "D": 0.0,
+            "W": 0.0,
+        }, strategy
+
+
+@pytest.mark.parametrize("max_members", [0, 1, 2, 3, 10])
+def test_bonus_with_zero_bonus_behaves_like_relevance_plus_diversity(cfg, max_members):
+    zero = cfg.model_copy(update={"distance_bonus": 0.0})
+    pool = [A2, B, C, D, NEAR, A3, FAR_LOW, NEAR_HIGH, WEAK_FAR]
+    bonus = match(Q01, HOST, pool, max_members=max_members, cfg=zero, strategy=BONUS)
+    div = match(Q01, HOST, pool, max_members=max_members, cfg=zero, strategy="relevance_plus_diversity")
+    assert _order(bonus) == _order(div)
+    relabel = {REASON_SELECTED_SCORE: REASON_SELECTED}
+    assert [(i, relabel.get(r, r)) for i, r in _reasons(bonus)] == _reasons(div)
+    assert all(c.score == (c.relevance if c.relevance >= cfg.tau else 0.0) for c in bonus.candidates)
+
+
+def test_bonus_invariants_on_random_pools(cfg):
+    pool = [A2, B, C, D, NEAR, A3, FAR_LOW, NEAR_HIGH, WEAK_FAR, P, OWN_OTHER]
+    rng = random.Random(2026)
+    for _ in range(200):
+        sample = rng.sample(pool, rng.randint(0, len(pool)))
+        max_members = rng.randint(0, 5)
+        result = match(Q01, HOST, sample, max_members=max_members, cfg=cfg)
+        listed = [(-c.relevance, c.subbrain_id) for c in result.candidates]
+        assert listed == sorted(listed)  # models.py: listed in relevance order
+        cands = _ranked(result)
+        keys = [(-c.score, -c.relevance, c.subbrain_id) for c in cands]
+        assert keys == sorted(keys)
+        eligible = [c for c in cands if c.relevance >= cfg.tau and c.relevance > 0]
+        for c in cands:
+            expected = round(c.relevance + cfg.distance_bonus * c.distance, 4) if c in eligible else 0.0
+            assert c.score == expected
+            if c.selected:
+                assert c in eligible and c.matched_terms
+        selected = [c for c in cands if c.selected]  # in rank order
+        assert len(selected) == min(max_members, len(eligible))
+        top = eligible[:max_members]
+        if any(c.reason == REASON_DIVERSITY for c in cands):
+            assert not any(c.distance == 1.0 for c in top)
+            assert [c.reason for c in cands].count(REASON_DISPLACED) == 1
+            assert next(c for c in cands if c.reason == REASON_DISPLACED) is top[-1]
+        else:
+            assert selected == top
+        assert result.truncated is (len(eligible) > max_members)

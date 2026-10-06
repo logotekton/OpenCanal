@@ -3,6 +3,7 @@
 - Every line it writes (uvicorn access/error logs, mcp and opencanal loggers) masks MCP tokens, also
   when a client puts the token in a mistyped URL that only gets a 404.
 - SIGTERM shuts it down through Store.close(), so no <db>-wal/-shm is left for a later restore to replay.
+- MUST-E3 (v.5): a DB file left 0644 is narrowed to 0600 when serve opens it; its live sidecars are 0600.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import os
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -55,6 +57,7 @@ def test_serve_masks_tokens_in_all_log_lines_and_closes_db_on_sigterm(tmp_path: 
         _, token = store.create_user("A", Tier.PRO, user_id="user_a")
     finally:
         store.close()
+    os.chmod(db, 0o644)  # e.g. a DB made before MUST-E3, or copied with default permissions
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("OPENCANAL_")}
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(SRC_DIR), env.get("PYTHONPATH")]))
@@ -74,6 +77,9 @@ def test_serve_masks_tokens_in_all_log_lines_and_closes_db_on_sigterm(tmp_path: 
             _wait_for_health(base, proc)
             ok = httpx.post(f"{base}/mcp/{token}", json=body, headers=headers, timeout=10)
             assert ok.status_code == 200 and ok.json()["result"]["tools"]  # the token is live
+            live = [p for p in (db, Path(f"{db}-wal"), Path(f"{db}-shm")) if p.exists()]
+            assert db in live and Path(f"{db}-wal") in live
+            assert {p.name: stat.S_IMODE(os.stat(p).st_mode) for p in live} == {p.name: 0o600 for p in live}
             for path in mistyped:
                 assert httpx.post(base + path, json=body, headers=headers, timeout=10).status_code == 404
             evil = httpx.post(f"{base}/mcp/{token}", json=body, headers={**headers, "Host": "evil.example"}, timeout=10)

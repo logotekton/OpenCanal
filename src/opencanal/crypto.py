@@ -1,9 +1,9 @@
-"""Keys, token hashing, contributor-token encryption, backup encryption (ORACLE NEVER-11, MUST-E1/E2, D-006).
+"""Keys, token hashing, contributor-token encryption, backup encryption (ORACLE NEVER-11, MUST-E1/E2/E3, D-006).
 
 Owner: Builder K.
 
 The master key is never used directly. Each purpose gets its own HKDF-SHA256 subkey
-(D-006): one for contributor tokens (AES-SIV), one for backups (Fernet).
+(D-006): one for contributor tokens (AES-SIV), one for withheld refs (HMAC-SHA256), one for backups (Fernet).
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import os
 import secrets
 import stat
@@ -27,9 +28,25 @@ MASTER_KEY_BYTES = 32
 
 API_TOKEN_PREFIX = "oc_"
 CONTRIBUTOR_TOKEN_PREFIX = "ct_"
+WITHHELD_REF_PREFIX = "wr_"
+
+# MUST-E3: what opencanal creates for its data is private to the OS user.
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+# NEVER-11 (v.5): the token's plaintext is a fixed-size frame, so the token length says nothing about the owner id.
+# User ids are at most 64 characters (Store.create_user), i.e. at most 256 UTF-8 bytes in any script.
+MAX_OWNER_ID_CHARS = 64
+MAX_OWNER_ID_BYTES = 4 * MAX_OWNER_ID_CHARS
+MAX_DELTABRAIN_ID_BYTES = 64
+_LEN_BYTES = 2  # big-endian length prefix of each field
+_CONTRIBUTOR_TOKEN_FRAME_BYTES = _LEN_BYTES + MAX_OWNER_ID_BYTES + _LEN_BYTES + MAX_DELTABRAIN_ID_BYTES
 
 _CONTRIBUTOR_TOKEN_INFO = b"opencanal/contributor-token/v1"
 _CONTRIBUTOR_TOKEN_KEY_BYTES = 64  # AES-256-SIV
+_WITHHELD_REF_INFO = b"opencanal/withheld-ref/v1"
+_WITHHELD_REF_KEY_BYTES = 32
+_WITHHELD_REF_MAC_BYTES = 16  # truncated HMAC-SHA256: 128 bits
 _BACKUP_INFO = b"opencanal/backup/v1"
 _BACKUP_KEY_BYTES = 32  # Fernet signing + encryption halves
 
@@ -47,6 +64,33 @@ def hash_api_token(token: str) -> str:
     if not isinstance(token, str):
         raise TypeError("token must be str")
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# --- Private directories (MUST-E3) --------------------------------------------
+
+
+def make_private_dirs(path: Path | str) -> None:
+    """Create directory `path` and any missing parents, each with mode 0700 exactly.
+
+    Only directories this call creates are given a mode; an existing directory is never touched (it may be the
+    user's home or a shared temp dir). Like Path.mkdir(parents=True, exist_ok=True) otherwise.
+    """
+    target = Path(path)
+    missing: list[Path] = []
+    current = target
+    while not os.path.lexists(current):
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    for directory in reversed(missing):
+        try:
+            os.mkdir(directory, PRIVATE_DIR_MODE)
+        except FileExistsError:
+            continue  # created concurrently by someone else: not ours to re-mode
+        os.chmod(directory, PRIVATE_DIR_MODE)  # umask can only remove bits; pin the mode exactly
+    if not target.is_dir():
+        raise NotADirectoryError(f"not a directory: {target}")
 
 
 # --- Master key (MUST-E1) -----------------------------------------------------
@@ -128,7 +172,7 @@ def load_or_create_master_key(path: Path | str) -> bytes:
 
     key_path = Path(path)
     if not key_path.exists():
-        key_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_private_dirs(key_path.parent)
         created = _create_master_key_file(key_path)
         if created is not None:
             return created
@@ -157,6 +201,10 @@ def _contributor_token_key(master_key: bytes) -> bytes:
     return _derive(master_key, _CONTRIBUTOR_TOKEN_INFO, _CONTRIBUTOR_TOKEN_KEY_BYTES)
 
 
+def _withheld_ref_key(master_key: bytes) -> bytes:
+    return _derive(master_key, _WITHHELD_REF_INFO, _WITHHELD_REF_KEY_BYTES)
+
+
 def _backup_key(master_key: bytes) -> bytes:
     return _derive(master_key, _BACKUP_INFO, _BACKUP_KEY_BYTES)
 
@@ -164,17 +212,56 @@ def _backup_key(master_key: bytes) -> bytes:
 # --- Contributor tokens (NEVER-11, D-006) -------------------------------------
 
 
-def contributor_token(master_key: bytes, owner_id: str, deltabrain_id: str) -> str:
-    """Deterministic AES-SIV encryption of f"{owner_id}|{deltabrain_id}" with an HKDF subkey; urlsafe b64 string.
+def _utf8_field(value: str, name: str, max_bytes: int) -> bytes:
+    try:
+        data = value.encode("utf-8")
+    except UnicodeEncodeError as exc:  # lone surrogates
+        raise ValueError(f"{name} is not valid text") from exc
+    if len(data) > max_bytes:
+        raise ValueError(f"{name} is longer than {max_bytes} UTF-8 bytes")
+    return data
 
-    Same inputs -> same token; different deltabrain_id -> different token.
+
+def _frame(owner: bytes, deltabrain: bytes) -> bytes:
+    """len(owner) | owner | len(deltabrain) | deltabrain | 0x00 padding, always _CONTRIBUTOR_TOKEN_FRAME_BYTES long."""
+    body = (
+        len(owner).to_bytes(_LEN_BYTES, "big") + owner + len(deltabrain).to_bytes(_LEN_BYTES, "big") + deltabrain
+    )
+    return body + bytes(_CONTRIBUTOR_TOKEN_FRAME_BYTES - len(body))
+
+
+def _unframe(frame: bytes) -> tuple[bytes, bytes]:
+    if len(frame) != _CONTRIBUTOR_TOKEN_FRAME_BYTES:
+        raise ValueError("invalid contributor token")
+    owner_len = int.from_bytes(frame[:_LEN_BYTES], "big")
+    if owner_len > MAX_OWNER_ID_BYTES:
+        raise ValueError("invalid contributor token")
+    pos = _LEN_BYTES + owner_len
+    owner = frame[_LEN_BYTES:pos]
+    deltabrain_len = int.from_bytes(frame[pos:pos + _LEN_BYTES], "big")
+    if deltabrain_len > MAX_DELTABRAIN_ID_BYTES:
+        raise ValueError("invalid contributor token")
+    pos += _LEN_BYTES
+    deltabrain = frame[pos:pos + deltabrain_len]
+    # One plaintext per (owner, deltabrain): the padding must be exactly zeros.
+    if any(frame[pos + deltabrain_len:]):
+        raise ValueError("invalid contributor token")
+    return owner, deltabrain
+
+
+def contributor_token(master_key: bytes, owner_id: str, deltabrain_id: str) -> str:
+    """Deterministic AES-SIV encryption of (owner_id, deltabrain_id) with an HKDF subkey; urlsafe b64 string.
+
+    Same inputs -> same token; different deltabrain_id -> different token. The plaintext is a fixed-size frame
+    (length-prefixed fields, zero padding), so every token has the same length whatever the owner id (NEVER-11 v.5).
+    ValueError when owner_id is over MAX_OWNER_ID_BYTES or deltabrain_id over MAX_DELTABRAIN_ID_BYTES UTF-8 bytes.
     """
     if not isinstance(owner_id, str) or not isinstance(deltabrain_id, str):
         raise TypeError("owner_id and deltabrain_id must be str")
-    if "|" in owner_id:
-        # The separator must be unambiguous so decryption splits on the first "|".
-        raise ValueError("owner_id must not contain '|'")
-    plaintext = f"{owner_id}|{deltabrain_id}".encode("utf-8")
+    plaintext = _frame(
+        _utf8_field(owner_id, "owner_id", MAX_OWNER_ID_BYTES),
+        _utf8_field(deltabrain_id, "deltabrain_id", MAX_DELTABRAIN_ID_BYTES),
+    )
     ciphertext = AESSIV(_contributor_token_key(master_key)).encrypt(plaintext, None)
     return CONTRIBUTOR_TOKEN_PREFIX + _b64url_encode_nopad(ciphertext)
 
@@ -198,14 +285,27 @@ def decrypt_contributor_token(master_key: bytes, token: str) -> tuple[str, str]:
         plaintext = AESSIV(key).decrypt(ciphertext, None)
     except (InvalidTag, ValueError) as exc:
         raise ValueError("invalid contributor token") from exc
+    owner, deltabrain = _unframe(plaintext)
     try:
-        text = plaintext.decode("utf-8")
+        return owner.decode("utf-8"), deltabrain.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("invalid contributor token") from exc
-    owner_id, sep, deltabrain_id = text.partition("|")
-    if not sep:
-        raise ValueError("invalid contributor token")
-    return owner_id, deltabrain_id
+
+
+# --- Withheld refs (NEVER-11 v.5) ---------------------------------------------
+
+
+def withheld_ref(master_key: bytes, canal_id: str, subbrain_id: str) -> str:
+    """Opaque handle for a subbrain withheld from a viewer in one canal: "wr_" + truncated HMAC-SHA256 (HKDF
+    subkey) over f"{canal_id}|{subbrain_id}".
+
+    Same subbrain in the same canal -> same ref; a different canal -> an unrelated ref, so a withheld subbrain
+    cannot be linked across canals. Not reversible; the server recomputes it when needed.
+    """
+    if not isinstance(canal_id, str) or not isinstance(subbrain_id, str):
+        raise TypeError("canal_id and subbrain_id must be str")
+    mac = hmac.new(_withheld_ref_key(master_key), f"{canal_id}|{subbrain_id}".encode("utf-8"), hashlib.sha256)
+    return WITHHELD_REF_PREFIX + _b64url_encode_nopad(mac.digest()[:_WITHHELD_REF_MAC_BYTES])
 
 
 # --- Backups (MUST-E1) --------------------------------------------------------

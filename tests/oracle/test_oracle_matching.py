@@ -215,7 +215,8 @@ def test_prov_m2_no_strategy_selects_below_tau(cfg, strategy):
 
 def test_prov_m2_default_strategy_comes_from_config(cfg):
     result = _match(Q01, cfg=cfg)
-    assert result.strategy == cfg.matching.strategy == "relevance_plus_diversity"
+    # Oracle v.5 §5.4 MUST-M2 replaces PROV-M2: the default strategy is relevance_with_distance_bonus.
+    assert result.strategy == cfg.matching.strategy == "relevance_with_distance_bonus"
     assert _selected_ids(result) == {fixture_sid("A2"), fixture_sid("B"), fixture_sid("C")}
     assert result.truncated is False
 

@@ -203,8 +203,10 @@ def test_canal_get_withholds_a_host_that_went_private() -> None:
     for user in members.values():
         got = svc.dispatch(user, "canal_get", {"canal_id": opened["canal_id"]})
         assert got["ok"], got
-        assert got["untrusted_data"]["host"] == {"subbrain_id": host_id, "version": 1, "withheld": True}
+        # NEVER-11 v.5: a canal-scoped opaque ref instead of the host's real id and version.
+        assert got["untrusted_data"]["host"] == {"withheld": True, "withheld_ref": store.withheld_ref(opened["canal_id"], host_id)}
         text = json.dumps(got, ensure_ascii=False)
+        assert host_id not in text
         assert [s for s in a_strings if s in text] == []
         assert _brain("A")["owner"]["display_name"] not in text
     own = svc.dispatch(host_user, "canal_get", {"canal_id": opened["canal_id"]})

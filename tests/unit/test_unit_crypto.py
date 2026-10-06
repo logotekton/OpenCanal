@@ -1,9 +1,10 @@
-"""Unit tests for opencanal.crypto (Builder K). NEVER-11, MUST-E1/E2, D-006."""
+"""Unit tests for opencanal.crypto (Builder K). NEVER-11 (v.5), MUST-E1/E2/E3, D-006."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import os
 import re
 import stat
@@ -224,9 +225,81 @@ def test_contributor_token_hides_owner_plaintext(key_a):
     assert base64.urlsafe_b64encode(owner.encode()).decode().rstrip("=") not in token
 
 
-def test_contributor_token_owner_with_separator_rejected(key_a):
+def test_contributor_token_owner_with_separator_round_trips(key_a):
+    # Length-prefixed fields: "|" in the owner id is no longer ambiguous (and no longer a server crash).
+    token = crypto.contributor_token(key_a, "user|a", "db_1")
+    assert crypto.decrypt_contributor_token(key_a, token) == ("user|a", "db_1")
+    assert token != crypto.contributor_token(key_a, "user", "a|db_1")
+
+
+# --- NEVER-11 v.5: the token length says nothing about the owner id ---------------
+
+
+LONGEST_OWNER_IDS = [
+    "a" * crypto.MAX_OWNER_ID_CHARS,
+    "가" * crypto.MAX_OWNER_ID_CHARS,  # 3 UTF-8 bytes each
+    "\U0001F600" * crypto.MAX_OWNER_ID_CHARS,  # 4 UTF-8 bytes each: the byte maximum
+]
+
+
+def test_contributor_token_length_is_independent_of_owner_id(key_a):
+    owners = ["", "u", "user_c", "user_with_a_much_longer_identifier_0123456789", "사용자_가", *LONGEST_OWNER_IDS]
+    lengths = {len(crypto.contributor_token(key_a, owner, "db_0123456789abcdef")) for owner in owners}
+    assert len(lengths) == 1, lengths
+    # ... and of the deltabrain id.
+    assert {len(crypto.contributor_token(key_a, "user_c", d)) for d in ("d", "db_0123456789abcdef", "x" * 64)} == lengths
+
+
+@pytest.mark.parametrize("owner_id", LONGEST_OWNER_IDS)
+def test_contributor_token_longest_owner_ids_round_trip(key_a, owner_id):
+    token = crypto.contributor_token(key_a, owner_id, "db_" + "f" * 16)
+    assert crypto.decrypt_contributor_token(key_a, token) == (owner_id, "db_" + "f" * 16)
+
+
+@pytest.mark.parametrize(
+    "owner_id,deltabrain_id",
+    [
+        ("a" * (crypto.MAX_OWNER_ID_BYTES + 1), "db_1"),
+        ("\U0001F600" * crypto.MAX_OWNER_ID_CHARS + "a", "db_1"),
+        ("user_c", "x" * (crypto.MAX_DELTABRAIN_ID_BYTES + 1)),
+        ("user_\ud800", "db_1"),  # lone surrogate: not encodable
+    ],
+)
+def test_contributor_token_rejects_ids_that_do_not_fit_the_frame(key_a, owner_id, deltabrain_id):
     with pytest.raises(ValueError):
-        crypto.contributor_token(key_a, "user|a", "db_1")
+        crypto.contributor_token(key_a, owner_id, deltabrain_id)
+
+
+def _seal(key: bytes, plaintext: bytes) -> str:
+    """A token over an arbitrary plaintext, as only someone holding the subkey could make it."""
+    raw = AESSIV(crypto._contributor_token_key(key)).encrypt(plaintext, None)
+    return "ct_" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _frame(owner: bytes, deltabrain: bytes, size: int = crypto._CONTRIBUTOR_TOKEN_FRAME_BYTES) -> bytes:
+    body = len(owner).to_bytes(2, "big") + owner + len(deltabrain).to_bytes(2, "big") + deltabrain
+    return body + bytes(size - len(body))
+
+
+def test_contributor_token_plaintext_is_the_documented_frame(key_a):
+    assert crypto.contributor_token(key_a, "user_c", "db_1") == _seal(key_a, _frame(b"user_c", b"db_1"))
+
+
+@pytest.mark.parametrize(
+    "plaintext",
+    [
+        b"user_c|db_1",  # the pre-v.5 unframed plaintext
+        _frame(b"user_c", b"db_1")[:-1],  # frame too short
+        _frame(b"user_c", b"db_1") + b"\x00",  # frame too long
+        _frame(b"user_c", b"db_1")[:-1] + b"\x01",  # non-zero padding
+        b"\x01\x01" + _frame(b"user_c", b"db_1")[2:],  # owner length beyond the cap
+        _frame(b"\xff\xfe", b"db_1"),  # owner bytes not UTF-8
+        _frame(b"user_c", b"\xc3"),  # deltabrain bytes not UTF-8
+    ],
+)
+def test_contributor_token_malformed_frame_rejected(key_a, plaintext):
+    with pytest.raises(ValueError):
+        crypto.decrypt_contributor_token(key_a, _seal(key_a, plaintext))
 
 
 def test_contributor_token_tamper_every_position_detected(key_a):
@@ -354,3 +427,73 @@ def test_backup_and_contributor_subkeys_are_distinct(key_a):
     assert len(ct_key) == 64 and len(bk_key) == 32
     assert bk_key != ct_key[:32] and bk_key != ct_key[32:]
     assert key_a not in (ct_key[:32], ct_key[32:], bk_key)
+
+
+def test_withheld_ref_subkey_is_distinct(key_a):
+    wr_key = crypto._withheld_ref_key(key_a)
+    ct_key = crypto._contributor_token_key(key_a)
+    assert len(wr_key) == 32
+    assert wr_key not in (key_a, crypto._backup_key(key_a), ct_key[:32], ct_key[32:])
+
+
+# --- Withheld refs (NEVER-11 v.5) ---------------------------------------------
+
+
+def test_withheld_ref_is_stable_within_a_canal_and_unlinkable_across_canals(key_a, key_b):
+    ref = crypto.withheld_ref(key_a, "cn_1", "sb_c")
+    assert ref == crypto.withheld_ref(key_a, "cn_1", "sb_c")
+    assert ref != crypto.withheld_ref(key_a, "cn_2", "sb_c")
+    assert ref != crypto.withheld_ref(key_a, "cn_1", "sb_b")
+    assert ref != crypto.withheld_ref(key_b, "cn_1", "sb_c")
+
+
+def test_withheld_ref_format_and_construction(key_a):
+    ref = crypto.withheld_ref(key_a, "cn_1", "sb_c")
+    assert ref.startswith("wr_") and URLSAFE.match(ref[3:]) and "=" not in ref
+    assert "sb_c" not in ref and "cn_1" not in ref
+    mac = hmac.new(crypto._withheld_ref_key(key_a), b"cn_1|sb_c", hashlib.sha256).digest()[:16]
+    assert ref == "wr_" + base64.urlsafe_b64encode(mac).decode().rstrip("=")
+    assert len({len(crypto.withheld_ref(key_a, c, s)) for c, s in [("c", "s"), ("cn_" + "f" * 16, "sb_" + "0" * 40)]}) == 1
+
+
+def test_withheld_ref_rejects_non_str(key_a):
+    with pytest.raises(TypeError):
+        crypto.withheld_ref(key_a, "cn_1", None)  # type: ignore[arg-type]
+
+
+# --- Private directories (MUST-E3) ----------------------------------------------
+
+
+def test_make_private_dirs_creates_every_missing_level_0700_even_with_permissive_umask(tmp_path):
+    target = tmp_path / "a" / "b" / "c"
+    old = os.umask(0o000)
+    try:
+        crypto.make_private_dirs(target)
+    finally:
+        os.umask(old)
+    for d in (tmp_path / "a", tmp_path / "a" / "b", target):
+        assert _mode(d) == 0o700, d
+
+
+def test_make_private_dirs_leaves_existing_directories_alone(tmp_path):
+    existing = tmp_path / "shared"
+    existing.mkdir()
+    os.chmod(existing, 0o755)
+    crypto.make_private_dirs(existing / "data")
+    crypto.make_private_dirs(existing)
+    assert _mode(existing) == 0o755
+    assert _mode(existing / "data") == 0o700
+
+
+def test_make_private_dirs_refuses_a_file(tmp_path):
+    f = tmp_path / "file"
+    f.write_text("x")
+    with pytest.raises(OSError):
+        crypto.make_private_dirs(f)
+    with pytest.raises(OSError):
+        crypto.make_private_dirs(f / "below")
+
+
+def test_master_key_parent_dirs_created_0700(tmp_path):
+    crypto.load_or_create_master_key(tmp_path / "data" / "keys" / "master.key")
+    assert _mode(tmp_path / "data") == 0o700 and _mode(tmp_path / "data" / "keys") == 0o700

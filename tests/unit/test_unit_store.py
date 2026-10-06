@@ -28,7 +28,7 @@ from opencanal.models import (
     Tier,
     Visibility,
 )
-from opencanal.store import MASKED_DISPLAY, Store
+from opencanal.store import MASKED_DISPLAY, MAX_USER_ID_CHARS, Store
 
 MASTER_KEY = b"k" * 32
 
@@ -160,6 +160,22 @@ def test_create_user_explicit_id_and_duplicate(store):
     assert store.set_tier("user_b", Tier.PRO).tier == Tier.PRO
     assert store.get_user("user_b").tier == Tier.PRO
     assert store.get_user("nobody") is None
+
+
+@pytest.mark.parametrize("uid", ["a" * MAX_USER_ID_CHARS, "가" * MAX_USER_ID_CHARS, "\U0001F600" * MAX_USER_ID_CHARS])
+def test_create_user_accepts_ids_up_to_64_characters(store, uid):
+    assert MAX_USER_ID_CHARS == 64
+    user, _ = store.create_user("긴 ID", Tier.FREE, user_id=uid)
+    assert store.get_user(uid) == user
+
+
+@pytest.mark.parametrize("uid", ["a" * (MAX_USER_ID_CHARS + 1), "가" * (MAX_USER_ID_CHARS + 1), "user_\ud800"])
+def test_create_user_refuses_ids_that_cannot_be_masked(store, uid):
+    """NEVER-11 v.5: the id must fit the fixed contributor-token frame; refused up front, nothing written."""
+    with pytest.raises(OpenCanalError) as info:
+        store.create_user("너무 긴 ID", Tier.FREE, user_id=uid)
+    assert info.value.code == ErrorCode.INVALID_ARGUMENT
+    assert store._conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
 
 
 # -- subbrains / visibility ------------------------------------------------------
@@ -304,6 +320,7 @@ def test_deltabrain_view_for_participants(store, world):
     view = store.get_deltabrain_for_viewer("user_b", world["db"])
     assert set(view) == {"id", "canal_id", "query", "host_subbrain_id", "created_at", "synthesizer", "stats",
                          "nodes", "edges", "contributors"}
+    assert view["host_subbrain_id"] == world["sa"]
     assert view["query"] == "모듈러 조립 오류" and view["synthesizer"]["model"] == "test"
     json.dumps(view)  # JSON-ready
     ref = view["nodes"][1]["provenance"][0]
@@ -709,3 +726,148 @@ def test_masked_host_does_not_count_as_host_touching(store, world):
     assert view["stats"]["host_touching_emergent_edge_ids"] == []
     host_view = store.get_deltabrain_for_viewer("user_a", world["db"])
     assert host_view["stats"] == world["stats"].model_dump(mode="json")
+
+
+def test_masked_host_id_is_not_shown_anywhere_in_the_deltabrain_view(store, world):
+    """NEVER-11 v.5: the top-level host_subbrain_id would link the private host across deltabrains."""
+    store.set_visibility("user_a", world["sa"], Visibility.PRIVATE)
+    for viewer in ("user_b", "user_c"):
+        view = store.get_deltabrain_for_viewer(viewer, world["db"])
+        assert view["host_subbrain_id"] is None
+        text = json.dumps(view, ensure_ascii=False)
+        assert world["sa"] not in text and "user_a" not in text and "앨리스" not in text
+        assert world["sa"] not in json.dumps(store.list_deltabrains_for_viewer(viewer), ensure_ascii=False)
+    assert store.get_deltabrain_for_viewer("user_a", world["db"])["host_subbrain_id"] == world["sa"]
+
+
+def test_masked_member_ids_are_not_shown_anywhere_in_the_deltabrain_view(store, world):
+    store.set_visibility("user_c", world["sc"], Visibility.PRIVATE)
+    for viewer in ("user_a", "user_b"):
+        view = store.get_deltabrain_for_viewer(viewer, world["db"])
+        text = json.dumps(view, ensure_ascii=False)
+        assert world["sc"] not in text and "user_c" not in text and "캐럴셀" not in text
+        assert view["host_subbrain_id"] == world["sa"]
+    own = json.dumps(store.get_deltabrain_for_viewer("user_c", world["db"]), ensure_ascii=False)
+    assert world["sc"] in own and "user_c" in own
+
+
+def test_withheld_ref_is_per_canal(store, world):
+    canal2 = store.create_canal("user_a", world["sa"], 1, "다른 질의", QueryMode.TOPIC, list(world["canal"].members))
+    ref = store.withheld_ref(world["canal"].id, world["sb"])
+    assert ref.startswith("wr_") and world["sb"] not in ref
+    assert ref == store.withheld_ref(world["canal"].id, world["sb"])
+    assert ref != store.withheld_ref(canal2.id, world["sb"])
+    assert ref != store.withheld_ref(world["canal"].id, world["sc"])
+    assert ref == crypto.withheld_ref(MASTER_KEY, world["canal"].id, world["sb"])
+
+
+# -- MUST-E3: DB file and sidecars 0600, created data directory 0700 ---------------------
+
+
+def _mode(path) -> int:
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+def _sidecar(path: Path, suffix: str) -> Path:
+    return path.with_name(path.name + suffix)
+
+
+def test_new_db_file_and_sidecars_are_0600_and_created_dir_0700_even_with_permissive_umask(tmp_path):
+    path = tmp_path / "data" / "nested" / "x.db"
+    old = os.umask(0o000)
+    try:
+        s = Store(path, master_key=MASTER_KEY)
+        try:
+            s.create_user("u", Tier.FREE, user_id="user_x")  # a write after open: -wal/-shm exist now
+            assert _mode(path) == 0o600
+            for suffix in ("-wal", "-shm"):
+                assert _sidecar(path, suffix).exists() and _mode(_sidecar(path, suffix)) == 0o600, suffix
+        finally:
+            s.close()
+    finally:
+        os.umask(old)
+    assert _mode(tmp_path / "data") == 0o700 and _mode(tmp_path / "data" / "nested") == 0o700
+    assert _mode(path) == 0o600
+
+
+def test_existing_directory_mode_is_left_alone(tmp_path):
+    os.chmod(tmp_path, 0o755)
+    s = Store(tmp_path / "x.db", master_key=MASTER_KEY)
+    s.close()
+    assert _mode(tmp_path) == 0o755 and _mode(tmp_path / "x.db") == 0o600
+
+
+def test_existing_broader_db_is_narrowed_on_open(tmp_path):
+    path = tmp_path / "x.db"
+    raw = sqlite3.connect(path)  # created by someone else with SQLite's default 0644
+    raw.execute("CREATE TABLE IF NOT EXISTS t (x)")
+    raw.commit()
+    raw.close()
+    os.chmod(path, 0o644)
+    s = Store(path, master_key=MASTER_KEY)
+    try:
+        assert _mode(path) == 0o600
+        for suffix in ("-wal", "-shm"):
+            assert _mode(_sidecar(path, suffix)) == 0o600
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_existing_broader_sidecars_are_narrowed_before_sqlite_opens(tmp_path, suffix):
+    from opencanal import store as store_mod
+
+    path = tmp_path / "x.db"
+    _sidecar(path, suffix).write_bytes(b"")  # left by an earlier opener while the DB file was 0644
+    os.chmod(_sidecar(path, suffix), 0o666)
+    store_mod._prepare_db_file(path)
+    assert _mode(_sidecar(path, suffix)) == 0o600 and _mode(path) == 0o600
+
+
+def test_sidecars_left_by_a_concurrent_broader_opener_are_narrowed(tmp_path):
+    path = tmp_path / "x.db"
+    Store(path, master_key=MASTER_KEY).close()
+    os.chmod(path, 0o644)
+    other = sqlite3.connect(path)  # keeps -wal/-shm alive with the 0644 mode it saw
+    try:
+        other.execute("PRAGMA journal_mode=WAL")
+        other.execute("INSERT INTO audit_log (ts, actor, action, target, detail_json) VALUES ('t','a','x','t','{}')")
+        other.commit()
+        assert _mode(_sidecar(path, "-wal")) == 0o644  # self-check: SQLite copied the broad main-file mode
+        s = Store(path, master_key=MASTER_KEY)
+        try:
+            for p in (path, _sidecar(path, "-wal"), _sidecar(path, "-shm")):
+                assert _mode(p) == 0o600, p
+        finally:
+            s.close()
+    finally:
+        other.close()
+
+
+def test_narrower_existing_db_mode_is_kept(tmp_path):
+    from opencanal import store as store_mod
+
+    path = tmp_path / "x.db"
+    Store(path, master_key=MASTER_KEY).close()
+    os.chmod(path, 0o400)
+    try:
+        store_mod._prepare_db_file(path)
+        assert _mode(path) == 0o400  # not broader than 0600: nothing to narrow
+    finally:
+        os.chmod(path, 0o600)
+
+
+def test_fifo_at_a_sidecar_path_does_not_hang_open(tmp_path):
+    path = tmp_path / "x.db"
+    os.mkfifo(_sidecar(path, "-journal"))
+    from opencanal import store as store_mod
+
+    store_mod._prepare_db_file(path)  # returns: a FIFO is not a file to chmod, and opening it must not block
+    assert _mode(path) == 0o600
+
+
+def test_restore_creates_missing_directories_0700(tmp_path, store, world):
+    target = tmp_path / "new" / "deeper" / "o.db"
+    Store.restore_bytes(target, store.snapshot_bytes())
+    assert _mode(tmp_path / "new") == 0o700 and _mode(tmp_path / "new" / "deeper") == 0o700
+    assert _mode(target) == 0o600
