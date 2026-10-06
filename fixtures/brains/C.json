@@ -1,0 +1,41 @@
+{
+  "fixture_id": "C",
+  "owner": {"user_id": "user_c", "display_name": "Chaeyoung Yoon", "tier": "free"},
+  "visibility": "public",
+  "document": {
+    "title": "단백질 자기조립과 오류 교정",
+    "domains": ["세포생물학"],
+    "nodes": [
+      {"id": "c-n1", "label": "단백질 자기조립", "type": "현상", "tags": ["조립", "단백질", "자기조립"],
+       "summary": "서브유닛이 외부 지시 없이 정해진 구조로 스스로 결합하는 현상."},
+      {"id": "c-n2", "label": "형태 상보성", "type": "원리", "tags": ["형태", "상보성", "결합"],
+       "summary": "결합하는 두 표면의 모양과 전하 분포가 서로 맞물려야만 안정적으로 붙는다."},
+      {"id": "c-n3", "label": "오류 교정 기제", "type": "기제", "tags": ["오류", "교정"],
+       "summary": "잘못 결합한 서브유닛은 결합 에너지가 낮아 다시 떨어져 나가고 맞는 짝이 그 자리를 차지한다."},
+      {"id": "c-n4", "label": "샤페론 단백질", "type": "분자", "tags": ["샤페론", "접힘"],
+       "summary": "새로 만든 단백질이 엉뚱한 모양으로 접히지 않도록 돕는다."},
+      {"id": "c-n5", "label": "잘못 접힌 단백질 분해", "type": "기제", "tags": ["분해", "유비퀴틴"],
+       "summary": "고칠 수 없는 단백질에는 표지를 붙여 분해 장치로 보낸다."},
+      {"id": "c-n6", "label": "열쇠와 자물쇠 모델", "type": "모델", "tags": ["결합", "특이성"],
+       "summary": "효소와 기질의 모양이 정확히 맞아야 반응한다는 고전적 설명."},
+      {"id": "c-n7", "label": "유도 적합 모델", "type": "모델", "tags": ["결합", "유연성"],
+       "summary": "결합하면서 단백질 모양이 조금 바뀌어 더 꼭 맞게 된다."},
+      {"id": "c-n8", "label": "캡시드 조립", "type": "현상", "tags": ["바이러스", "조립"],
+       "summary": "같은 단백질 수십 개가 정이십면체 껍질로 저절로 맞춰진다."},
+      {"id": "c-n9", "label": "결합 친화도", "type": "지표", "tags": ["친화도", "결합"],
+       "summary": "두 분자가 얼마나 단단히 붙어 있는지 나타내는 값."},
+      {"id": "c-n10", "label": "동역학적 교정", "type": "기제", "tags": ["교정", "에너지"],
+       "summary": "에너지를 써서 한 번 더 확인하는 단계를 넣어 틀린 결합을 걸러 낸다."}
+    ],
+    "edges": [
+      {"id": "c-e1", "source": "c-n2", "target": "c-n1", "relation": "enables"},
+      {"id": "c-e2", "source": "c-n3", "target": "c-n1", "relation": "corrects"},
+      {"id": "c-e3", "source": "c-n4", "target": "c-n5", "relation": "alternative"},
+      {"id": "c-e4", "source": "c-n6", "target": "c-n2", "relation": "illustrates"},
+      {"id": "c-e5", "source": "c-n7", "target": "c-n6", "relation": "refines"},
+      {"id": "c-e6", "source": "c-n8", "target": "c-n1", "relation": "instance_of"},
+      {"id": "c-e7", "source": "c-n9", "target": "c-n3", "relation": "explains"},
+      {"id": "c-e8", "source": "c-n10", "target": "c-n3", "relation": "mechanism_of"}
+    ]
+  }
+}

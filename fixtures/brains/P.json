@@ -1,0 +1,36 @@
+{
+  "fixture_id": "P",
+  "owner": {"user_id": "user_b", "display_name": "Bora Lee", "tier": "free"},
+  "visibility": "private",
+  "document": {
+    "title": "미공개 신작 모듈러 성채 퍼즐 기획",
+    "domains": ["게임 디자인"],
+    "nodes": [
+      {"id": "p-n1", "label": "모듈러 성채 레벨", "type": "레벨", "tags": ["모듈러", "건축", "레벨"],
+       "summary": "플레이어가 성벽 조각을 이어 붙여 성채를 짓는 메인 스테이지."},
+      {"id": "p-n2", "label": "성채 블록 조립 오류 로그", "type": "데이터", "tags": ["조립", "오류", "로그"],
+       "summary": "사내 테스터가 어느 조각을 어디에 잘못 붙였는지 모은 기록."},
+      {"id": "p-n3", "label": "현장 시연 반응 메모", "type": "기록", "tags": ["현장", "시연"],
+       "summary": "게임쇼 부스에서 관람객이 막힌 지점을 적은 메모."},
+      {"id": "p-n4", "label": "보스 방 동선", "type": "레벨", "tags": ["동선", "보스"],
+       "summary": "마지막 방은 세 갈래 길이 한 문으로 모이게 설계했다."},
+      {"id": "p-n5", "label": "숨은 통로 퍼즐", "type": "퍼즐", "tags": ["비밀", "통로"],
+       "summary": "벽돌 하나를 빼면 열리는 샛길. 출시 전까지 외부 공개 금지."},
+      {"id": "p-n6", "label": "출시 일정 초안", "type": "계획", "tags": ["일정", "출시"],
+       "summary": "알파 테스트 다음 분기, 정식 출시는 그 다음 분기 목표."},
+      {"id": "p-n7", "label": "협력 모드 규칙", "type": "규칙", "tags": ["협력", "멀티"],
+       "summary": "두 명이 같은 성벽을 동시에 들어야만 올릴 수 있다."},
+      {"id": "p-n8", "label": "성채 테마 색감", "type": "아트", "tags": ["색감", "아트"],
+       "summary": "회색 돌 위에 깃발과 지붕만 원색으로 칠한다."}
+    ],
+    "edges": [
+      {"id": "p-e1", "source": "p-n2", "target": "p-n1", "relation": "informs"},
+      {"id": "p-e2", "source": "p-n3", "target": "p-n2", "relation": "complements"},
+      {"id": "p-e3", "source": "p-n4", "target": "p-n1", "relation": "part_of"},
+      {"id": "p-e4", "source": "p-n5", "target": "p-n4", "relation": "part_of"},
+      {"id": "p-e5", "source": "p-n7", "target": "p-n1", "relation": "extends"},
+      {"id": "p-e6", "source": "p-n8", "target": "p-n1", "relation": "styles"},
+      {"id": "p-e7", "source": "p-n6", "target": "p-n1", "relation": "schedules"}
+    ]
+  }
+}

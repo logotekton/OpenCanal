@@ -1,0 +1,203 @@
+{
+  "nodes": [
+    {
+      "id": "q",
+      "kind": "query",
+      "label": "모듈러 건축의 현장 조립 오류를 줄일 아이디어"
+    },
+    {
+      "id": "s-a1",
+      "kind": "source",
+      "label": "현장 조립 오류",
+      "provenance": [
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n2"
+        }
+      ]
+    },
+    {
+      "id": "s-a2",
+      "kind": "source",
+      "label": "접합부 상세",
+      "provenance": [
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n3"
+        }
+      ]
+    },
+    {
+      "id": "s-a3",
+      "kind": "source",
+      "label": "공차 관리",
+      "provenance": [
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n4"
+        }
+      ]
+    },
+    {
+      "id": "s-b1",
+      "kind": "source",
+      "label": "잘못 놓을 수 없는 블록 모양",
+      "provenance": [
+        {
+          "subbrain_id": "sb_B",
+          "version": 1,
+          "node_id": "b-n2"
+        }
+      ]
+    },
+    {
+      "id": "s-c1",
+      "kind": "source",
+      "label": "형태 상보성",
+      "provenance": [
+        {
+          "subbrain_id": "sb_C",
+          "version": 1,
+          "node_id": "c-n2"
+        }
+      ]
+    },
+    {
+      "id": "s-c2",
+      "kind": "source",
+      "label": "오류 교정 기제",
+      "provenance": [
+        {
+          "subbrain_id": "sb_C",
+          "version": 1,
+          "node_id": "c-n3"
+        }
+      ]
+    },
+    {
+      "id": "n1",
+      "kind": "new",
+      "label": "비대칭 접합 키 설계",
+      "summary": "유닛 접합부마다 위치별로 다른 돌기와 홈을 두어, 맞는 자리가 아니면 플레이트에 안착하지 않게 하는 상세.",
+      "provenance": [
+        {
+          "subbrain_id": "sb_B",
+          "version": 1,
+          "node_id": "b-n2"
+        },
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n3"
+        }
+      ]
+    },
+    {
+      "id": "n2",
+      "kind": "new",
+      "label": "설치 단계별 자가 검증",
+      "summary": "유닛 하나를 놓을 때마다 맞물림 상태를 확인하고, 틀리면 다음 유닛을 올리기 전에 바로 들어 올려 다시 놓는 절차.",
+      "provenance": [
+        {
+          "subbrain_id": "sb_C",
+          "version": 1,
+          "node_id": "c-n3"
+        },
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n2"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "q",
+      "target": "s-a1",
+      "relation": "requires"
+    },
+    {
+      "id": "e2",
+      "source": "q",
+      "target": "s-a2",
+      "relation": "requires"
+    },
+    {
+      "id": "e3",
+      "source": "s-c1",
+      "target": "s-a1",
+      "relation": "applies_to",
+      "rationale": "단백질은 표면 모양이 서로 맞물릴 때만 안정적으로 결합한다. 유닛 접합면에 맞물림 형상을 주면 틀린 위치나 방향으로는 고정되지 않아 현장 조립 오류가 설치하는 순간 드러난다.",
+      "applies_when": "접합면 형상을 공장에서 정밀하게 가공할 수 있고, 비슷하게 생긴 유닛이 많아 위치를 헷갈리기 쉬운 현장일 때"
+    },
+    {
+      "id": "e4",
+      "source": "s-b1",
+      "target": "s-a2",
+      "relation": "analogous_to",
+      "rationale": "퍼즐 블록의 요철 모양은 접합부 상세의 볼트 위치와 플레이트 형상에 대응한다. 블록이 맞지 않는 자리에 들어가지 않듯, 접합부를 위치마다 다르게 만들면 다른 유닛과 바꿔 끼울 수 없다.",
+      "applies_when": "접합부 종류를 유닛 위치마다 다르게 만들어도 제작비 증가를 감당할 수 있을 때"
+    },
+    {
+      "id": "e5",
+      "source": "n1",
+      "target": "s-a2",
+      "relation": "applies_to",
+      "rationale": "비대칭 접합 키는 접합부 상세에 위치별 고유 돌기를 더하는 방식이다. 키가 맞는 유닛만 플레이트에 안착하므로 볼트를 조이기 전에 잘못 놓인 유닛을 걸러 낸다.",
+      "applies_when": "유닛 배치가 설계 단계에서 확정되어 위치별 키를 미리 정할 수 있을 때"
+    },
+    {
+      "id": "e6",
+      "source": "n1",
+      "target": "s-b1",
+      "relation": "extends",
+      "rationale": "게임 블록에서 쓰던 잘못 놓을 수 없는 모양 원칙을 몇 톤짜리 건축 유닛의 철물 접합으로 넓힌 것이다. 화면의 스냅 피드백 대신 철물 형상이 같은 역할을 맡는다."
+    },
+    {
+      "id": "e7",
+      "source": "n2",
+      "target": "s-a1",
+      "relation": "applies_to",
+      "rationale": "유닛을 하나 놓을 때마다 맞물림을 확인하고 틀리면 바로 다시 놓게 하면 오류가 다음 층으로 넘어가지 않는다. 마지막에 한꺼번에 검사할 때보다 재작업 범위가 훨씬 작다.",
+      "applies_when": "크레인 대기 시간을 늘려도 전체 공기에 영향이 작을 때"
+    },
+    {
+      "id": "e8",
+      "source": "s-c2",
+      "target": "n2",
+      "relation": "explains",
+      "rationale": "세포는 잘못 결합한 서브유닛을 결합 에너지가 낮을 때 떼어 내고 맞는 짝이 다시 들어오게 한다. 단계마다 되돌릴 수 있는 검증 지점이 같은 원리로 오류 누적을 막는다."
+    },
+    {
+      "id": "e9",
+      "source": "s-c1",
+      "target": "s-b1",
+      "relation": "explains",
+      "rationale": "블록 모양이 실수를 막는 이유는 형태 상보성으로 설명된다. 서로 맞는 표면끼리만 안정적으로 붙기 때문에 규칙을 외우지 않아도 올바른 조합만 남는다.",
+      "provenance": [
+        {
+          "subbrain_id": "sb_D",
+          "version": 1,
+          "node_id": "d-n1"
+        }
+      ]
+    },
+    {
+      "id": "e10",
+      "source": "n1",
+      "target": "s-a3",
+      "relation": "requires",
+      "rationale": "돌기와 홈이 맞물리려면 제작과 운송 단계에서 생긴 치수 오차가 키의 여유보다 작아야 한다. 공차 관리가 없으면 맞는 유닛도 들어가지 않아 오히려 현장 지연을 만든다."
+    }
+  ],
+  "synthesizer": {
+    "kind": "client_llm",
+    "model": "oracle-handwritten",
+    "protocol_version": "opencanal-synthesis/0.1"
+  }
+}

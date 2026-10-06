@@ -1,0 +1,103 @@
+{
+  "nodes": [
+    {
+      "id": "q",
+      "kind": "query",
+      "label": "모듈러 건축의 현장 조립 오류를 줄일 아이디어"
+    },
+    {
+      "id": "s-b1",
+      "kind": "source",
+      "label": "잘못 놓을 수 없는 블록 모양",
+      "provenance": [
+        {
+          "subbrain_id": "sb_B",
+          "version": 1,
+          "node_id": "b-n2"
+        }
+      ]
+    },
+    {
+      "id": "s-c1",
+      "kind": "source",
+      "label": "형태 상보성",
+      "provenance": [
+        {
+          "subbrain_id": "sb_C",
+          "version": 1,
+          "node_id": "c-n2"
+        }
+      ]
+    },
+    {
+      "id": "s-c2",
+      "kind": "source",
+      "label": "오류 교정 기제",
+      "provenance": [
+        {
+          "subbrain_id": "sb_C",
+          "version": 1,
+          "node_id": "c-n3"
+        }
+      ]
+    },
+    {
+      "id": "n-bc",
+      "kind": "new",
+      "label": "맞물림 기반 자가 교정 블록",
+      "summary": "틀린 자리에서는 결합력이 약해 저절로 빠지는 블록.",
+      "provenance": [
+        {
+          "subbrain_id": "sb_B",
+          "version": 1,
+          "node_id": "b-n2"
+        },
+        {
+          "subbrain_id": "sb_C",
+          "version": 1,
+          "node_id": "c-n3"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "q",
+      "target": "s-b1",
+      "relation": "requires"
+    },
+    {
+      "id": "e2",
+      "source": "q",
+      "target": "s-c1",
+      "relation": "requires"
+    },
+    {
+      "id": "e3",
+      "source": "s-c1",
+      "target": "s-b1",
+      "relation": "explains",
+      "rationale": "블록 모양이 실수를 막는 이유는 형태 상보성으로 설명된다. 서로 맞는 표면끼리만 안정적으로 붙기 때문에 규칙을 외우지 않아도 올바른 조합만 남는다."
+    },
+    {
+      "id": "e4",
+      "source": "n-bc",
+      "target": "s-b1",
+      "relation": "extends",
+      "rationale": "모양으로 실수를 막는 블록에 세포의 교정 기제를 더해, 틀린 자리에 놓인 블록이 약하게만 붙어 있다가 저절로 빠지도록 넓힌 설계다."
+    },
+    {
+      "id": "e5",
+      "source": "s-c2",
+      "target": "n-bc",
+      "relation": "explains",
+      "rationale": "잘못 결합한 서브유닛이 결합 에너지가 낮아 떨어져 나가는 현상이, 틀린 자리의 블록이 약하게 붙도록 만든 이유를 설명한다."
+    }
+  ],
+  "synthesizer": {
+    "kind": "client_llm",
+    "model": "oracle-handwritten",
+    "protocol_version": "opencanal-synthesis/0.1"
+  }
+}

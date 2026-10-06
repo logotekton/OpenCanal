@@ -1,0 +1,48 @@
+{
+  "fixture_id": "A",
+  "owner": {"user_id": "user_a", "display_name": "Haram Kim", "tier": "free"},
+  "visibility": "public",
+  "document": {
+    "title": "모듈러 건축 현장 조립 품질 노트",
+    "domains": ["건축", "BIM"],
+    "nodes": [
+      {"id": "a-n1", "label": "모듈러 건축", "type": "개념", "tags": ["모듈러", "건축", "프리패브"],
+       "summary": "공장에서 만든 박스형 유닛을 현장으로 옮겨 쌓아 올리는 공법. 공기를 줄이는 대신 유닛끼리 맞물리는 정밀도가 중요해진다."},
+      {"id": "a-n2", "label": "현장 조립 오류", "type": "문제", "tags": ["현장", "조립", "오류", "품질"],
+       "summary": "유닛을 크레인으로 올려 맞출 때 생기는 위치·방향·순서 실수. 재작업과 공기 지연의 주원인이다."},
+      {"id": "a-n3", "label": "접합부 상세", "type": "설계", "tags": ["접합부", "상세도", "시공"],
+       "summary": "유닛과 유닛, 유닛과 기초가 만나는 부분의 볼트·플레이트·실링 상세. 현장에서 가장 많이 고쳐 그리는 도면이다."},
+      {"id": "a-n4", "label": "공차 관리", "type": "방법", "tags": ["공차", "치수", "품질"],
+       "summary": "제작·운송·설치 각 단계에 허용 오차를 나눠 주고 누적을 막는 일."},
+      {"id": "a-n5", "label": "BIM 간섭 조정", "type": "도구", "tags": ["BIM", "간섭", "조정"],
+       "summary": "설계 단계에서 구조·설비 모델을 겹쳐 충돌 지점을 미리 찾는다."},
+      {"id": "a-n6", "label": "공장 사전 제작", "type": "공정", "tags": ["공장", "제작", "프리패브"],
+       "summary": "내장과 설비까지 공장에서 끝내 현장 작업을 줄인다."},
+      {"id": "a-n7", "label": "모듈 운송 변형", "type": "위험", "tags": ["운송", "변형", "모듈"],
+       "summary": "트레일러 운송 중 진동과 하중으로 유닛 프레임이 비틀린다."},
+      {"id": "a-n8", "label": "양중 계획", "type": "공정", "tags": ["양중", "인양"],
+       "summary": "유닛 무게와 작업 반경에 맞춰 크레인 위치와 인양 순서를 정한다."},
+      {"id": "a-n9", "label": "설치 순서도", "type": "공정", "tags": ["설치", "순서"],
+       "summary": "어느 유닛을 어떤 순서로 놓을지 정한 도면. 순서가 틀리면 뒤 유닛이 들어가지 않는다."},
+      {"id": "a-n10", "label": "치수 누적 오차", "type": "위험", "tags": ["오차", "치수", "공차"],
+       "summary": "작은 오차가 층과 열을 따라 쌓여 마지막 유닛이 맞지 않게 된다."},
+      {"id": "a-n11", "label": "설비 배관 연결부", "type": "설계", "tags": ["설비", "배관", "접합부"],
+       "summary": "유닛 경계에서 배관을 잇는 부분. 누수와 위치 불일치가 자주 생긴다."},
+      {"id": "a-n12", "label": "유닛 식별 표기", "type": "방법", "tags": ["식별", "표기", "라벨링"],
+       "summary": "유닛마다 번호와 방향 화살표를 붙여 설치 위치를 헷갈리지 않게 한다."}
+    ],
+    "edges": [
+      {"id": "a-e1", "source": "a-n1", "target": "a-n2", "relation": "has_risk", "summary": "모듈러 공법은 현장 조립 단계에서 실수가 몰린다."},
+      {"id": "a-e2", "source": "a-n10", "target": "a-n2", "relation": "causes"},
+      {"id": "a-e3", "source": "a-n4", "target": "a-n10", "relation": "mitigates"},
+      {"id": "a-e4", "source": "a-n3", "target": "a-n2", "relation": "affects"},
+      {"id": "a-e5", "source": "a-n7", "target": "a-n10", "relation": "contributes_to"},
+      {"id": "a-e6", "source": "a-n8", "target": "a-n9", "relation": "precedes"},
+      {"id": "a-e7", "source": "a-n9", "target": "a-n2", "relation": "mitigates"},
+      {"id": "a-e8", "source": "a-n5", "target": "a-n3", "relation": "checks"},
+      {"id": "a-e9", "source": "a-n6", "target": "a-n1", "relation": "part_of"},
+      {"id": "a-e10", "source": "a-n11", "target": "a-n3", "relation": "part_of"},
+      {"id": "a-e11", "source": "a-n12", "target": "a-n2", "relation": "mitigates"}
+    ]
+  }
+}

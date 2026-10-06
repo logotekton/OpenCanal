@@ -27,3 +27,79 @@ v0 설계 단계 (R0 · 로컬 · 합성 데이터). 코드는 아직 없다.
 ## 이전 버전
 
 이 레포의 이전 구현(Verified Agent Network, TypeScript 모노레포)은 태그 `archive/agent-network-2026-07`에 남아 있다.
+
+## 실행
+
+v0는 로컬 전용이다(R0). 서버는 `127.0.0.1`에만 띄우고, 합성 두뇌 fixture와 오너 본인 데이터만 쓴다.
+
+### 설치와 준비
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/pip install -e '.[test]'
+.venv/bin/opencanal init-db          # data/opencanal.db, data/keys/master.key (0600)
+.venv/bin/opencanal seed-fixtures    # fixtures/brains/*.json → 사용자·서브브레인, 새 사용자 토큰을 한 번 출력
+```
+
+경로는 옵션이나 환경변수로 바꾼다. 상대 경로 기본값은 레포 루트 기준이다.
+
+| 옵션 | 환경변수 | 기본값 |
+|---|---|---|
+| `--db` | `OPENCANAL_DB` | `data/opencanal.db` |
+| `--key-file` | `OPENCANAL_KEY_FILE` | `data/keys/master.key` (`OPENCANAL_MASTER_KEY`가 있으면 그 값을 쓴다) |
+| `--config-dir` | `OPENCANAL_CONFIG_DIR` | `config/` |
+
+### 사용자와 토큰
+
+```bash
+.venv/bin/opencanal create-user --name "홍길동" --tier free [--user-id user_h]
+.venv/bin/opencanal rotate-token --user-id user_h     # 기존 토큰을 모두 폐기하고 새로 발급
+.venv/bin/opencanal set-tier --user-id user_h --tier pro
+```
+
+토큰과 MCP URL(`http://127.0.0.1:8765/mcp/<token>`)은 만들 때 한 번만 출력된다. 서버에는 토큰 해시만 남는다.
+잃어버리면 `rotate-token`으로 다시 발급한다.
+
+### MCP 서버
+
+HTTP(streamable HTTP, stateless):
+
+```bash
+.venv/bin/opencanal serve            # --host 127.0.0.1 --port 8765
+claude mcp add --transport http opencanal http://127.0.0.1:8765/mcp/<token>
+```
+
+stdio:
+
+```bash
+claude mcp add opencanal -e OPENCANAL_TOKEN=<token> -- /절대경로/opencanal/.venv/bin/opencanal mcp-stdio
+```
+
+- 토큰이 없거나 틀리거나 폐기됐으면 `tools/list`는 빈 목록이고, 모든 호출은 `UNAUTHORIZED`다. 기본 사용자로 열리지 않는다.
+- `tools/list`에는 내 티어에 허용된 도구만 나온다. 숨긴 도구를 직접 불러도 `TIER_FORBIDDEN`이다.
+- 모든 `tools/call` 결과는 텍스트 블록 하나이고, 그 내용은 JSON envelope(`{"ok": true, ...}` 또는 `{"ok": false, "error": {...}}`)다. 다른 사용자의 내용은 `untrusted_data` 아래에만 있다.
+- 서버 로그에는 토큰 앞 6자만 남는다. `GET /health`는 `{"ok": true}`다.
+
+### 매칭 들여다보기 (Pro 이상)
+
+```bash
+.venv/bin/opencanal match-explain --token <token> --query "모듈러 건축의 현장 조립 오류를 줄일 아이디어" \
+  --host-subbrain-id <subbrain_id> [--mode auto|topic|whole_host]
+```
+
+τ 미만 후보까지 관련도, 거리, 겹친 용어, 선택 여부, 이유를 표로 보여준다. 커널을 만들지 않고 사용량도 차감하지 않는다. `--token`을 생략하면 `OPENCANAL_TOKEN`을 쓴다.
+
+### 백업과 복원
+
+```bash
+.venv/bin/opencanal backup [--out backups/]                                   # backups/opencanal-<UTC>.db.enc (0600, 마스터 키로 암호화)
+.venv/bin/opencanal restore --in backups/opencanal-<UTC>.db.enc --db data/restored.db   # 이미 있는 파일은 덮어쓰지 않는다
+```
+
+복원하려면 백업을 만든 마스터 키가 있어야 한다. 키 파일과 백업은 git에 넣지 않는다(`.gitignore`의 `data/`, `backups/`, `*.key`).
+
+### 테스트
+
+```bash
+.venv/bin/python -m pytest -q
+```

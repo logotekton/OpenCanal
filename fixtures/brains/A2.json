@@ -1,0 +1,42 @@
+{
+  "fixture_id": "A2",
+  "owner": {"user_id": "user_e", "display_name": "Eunji Park", "tier": "free"},
+  "visibility": "public",
+  "document": {
+    "title": "목조 모듈러 주택 설계 메모",
+    "domains": ["건축", "BIM"],
+    "nodes": [
+      {"id": "e-n1", "label": "목조 모듈러 유닛", "type": "개념", "tags": ["모듈러", "건축", "목조"],
+       "summary": "CLT 벽체와 경량 목구조를 섞은 폭 3m 주거 유닛."},
+      {"id": "e-n2", "label": "현장 타설 기초", "type": "공정", "tags": ["기초", "콘크리트"],
+       "summary": "유닛을 받는 줄기초. 기초 레벨 차이가 위층 유닛 정렬을 좌우한다."},
+      {"id": "e-n3", "label": "CLT 패널 규격", "type": "자재", "tags": ["CLT", "목조", "규격"],
+       "summary": "공장 프레스 크기에 맞춘 패널 폭과 두께 목록."},
+      {"id": "e-n4", "label": "세대 경계 차음 벽체", "type": "설계", "tags": ["차음", "벽체"],
+       "summary": "두 유닛 벽을 띄워 세워 층간·세대간 소리를 끊는다."},
+      {"id": "e-n5", "label": "BIM 패밀리 라이브러리", "type": "도구", "tags": ["BIM", "패밀리"],
+       "summary": "자주 쓰는 유닛과 창호를 파라메트릭 부품으로 모아 둔 저장소."},
+      {"id": "e-n6", "label": "모듈 그리드 표준", "type": "설계", "tags": ["그리드", "표준화"],
+       "summary": "600mm 격자에 맞춰 모든 벽과 개구부 위치를 정한다."},
+      {"id": "e-n7", "label": "인허가 도서 준비", "type": "행정", "tags": ["인허가"],
+       "summary": "공장 생산분과 현지 시공분을 나눠 도서를 꾸린다."},
+      {"id": "e-n8", "label": "외피 단열 상세", "type": "설계", "tags": ["단열", "외피"],
+       "summary": "유닛 외벽의 단열층이 끊기지 않게 이음매를 겹친다."},
+      {"id": "e-n9", "label": "목재 함수율 관리", "type": "방법", "tags": ["함수율", "목재"],
+       "summary": "목재가 마르며 줄어드는 양을 예측해 여유 치수를 둔다."},
+      {"id": "e-n10", "label": "공장 품질 검수", "type": "방법", "tags": ["검수", "품질"],
+       "summary": "출고 전에 치수와 마감 상태를 체크 시트로 확인한다."}
+    ],
+    "edges": [
+      {"id": "e-e1", "source": "e-n3", "target": "e-n1", "relation": "part_of"},
+      {"id": "e-e2", "source": "e-n2", "target": "e-n1", "relation": "supports"},
+      {"id": "e-e3", "source": "e-n4", "target": "e-n1", "relation": "part_of"},
+      {"id": "e-e4", "source": "e-n5", "target": "e-n6", "relation": "implements"},
+      {"id": "e-e5", "source": "e-n6", "target": "e-n1", "relation": "constrains"},
+      {"id": "e-e6", "source": "e-n7", "target": "e-n1", "relation": "governs"},
+      {"id": "e-e7", "source": "e-n8", "target": "e-n4", "relation": "related"},
+      {"id": "e-e8", "source": "e-n9", "target": "e-n3", "relation": "affects"},
+      {"id": "e-e9", "source": "e-n10", "target": "e-n1", "relation": "checks"}
+    ]
+  }
+}

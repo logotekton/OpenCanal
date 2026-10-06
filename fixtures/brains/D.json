@@ -1,0 +1,39 @@
+{
+  "fixture_id": "D",
+  "owner": {"user_id": "user_d", "display_name": "Dami Seo", "tier": "free"},
+  "visibility": "public",
+  "document": {
+    "title": "동네 빵집 단골 만들기",
+    "domains": ["동네 빵집 마케팅"],
+    "nodes": [
+      {"id": "d-n1", "label": "단골 스탬프 카드", "type": "판촉", "tags": ["단골", "스탬프"],
+       "summary": "열 번 찍으면 식빵 하나를 주는 종이 카드. 손님 얼굴을 익히는 계기가 된다."},
+      {"id": "d-n2", "label": "출근길 아침 세트", "type": "메뉴", "tags": ["출근길", "세트메뉴"],
+       "summary": "커피와 크루아상을 묶어 일곱 시부터 판다. 역으로 가는 손님을 잡는다."},
+      {"id": "d-n3", "label": "인스타그램 진열대 사진", "type": "홍보", "tags": ["인스타그램", "사진"],
+       "summary": "아침 햇빛이 드는 시간에 진열대를 찍어 올린다."},
+      {"id": "d-n4", "label": "폐점 직전 할인 알림", "type": "판촉", "tags": ["할인", "알림"],
+       "summary": "문 닫기 한 시간 전 남은 빵을 묶어 싸게 판다고 단톡방에 알린다."},
+      {"id": "d-n5", "label": "주말 시식 행사", "type": "판촉", "tags": ["시식", "행사"],
+       "summary": "토요일 오후에 새로 낸 빵을 작게 잘라 맛보게 한다."},
+      {"id": "d-n6", "label": "계절 한정 케이크", "type": "메뉴", "tags": ["계절", "한정", "케이크"],
+       "summary": "딸기 철과 밤 철에만 내는 케이크로 다시 올 이유를 만든다."},
+      {"id": "d-n7", "label": "맘카페 입소문", "type": "홍보", "tags": ["입소문", "맘카페"],
+       "summary": "아이 간식 후기가 동네 커뮤니티에 올라오면 주말 손님이 는다."},
+      {"id": "d-n8", "label": "쇼핑백 스티커 디자인", "type": "브랜딩", "tags": ["스티커", "쇼핑백"],
+       "summary": "가게 이름과 고양이 그림을 넣은 스티커로 봉투를 여민다."},
+      {"id": "d-n9", "label": "갓 구운 빵 시간 공지", "type": "홍보", "tags": ["공지", "시간표"],
+       "summary": "바게트와 식빵이 나오는 시각을 문 앞 칠판에 적어 둔다."},
+      {"id": "d-n10", "label": "리뷰 답글 습관", "type": "응대", "tags": ["리뷰", "답글"],
+       "summary": "지도 앱 리뷰에 하루 안에 답한다. 불만 리뷰에는 사과와 다음 방문 혜택을 적는다."}
+    ],
+    "edges": [
+      {"id": "d-e1", "source": "d-n1", "target": "d-n10", "relation": "supports"},
+      {"id": "d-e2", "source": "d-n2", "target": "d-n1", "relation": "feeds"},
+      {"id": "d-e3", "source": "d-n3", "target": "d-n7", "relation": "spreads_to"},
+      {"id": "d-e4", "source": "d-n4", "target": "d-n9", "relation": "uses"},
+      {"id": "d-e5", "source": "d-n5", "target": "d-n6", "relation": "promotes"},
+      {"id": "d-e6", "source": "d-n8", "target": "d-n3", "relation": "supports"}
+    ]
+  }
+}

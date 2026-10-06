@@ -1,0 +1,41 @@
+{
+  "fixture_id": "B",
+  "owner": {"user_id": "user_b", "display_name": "Bora Lee", "tier": "free"},
+  "visibility": "public",
+  "document": {
+    "title": "퍼즐 게임 블록 설계 원칙",
+    "domains": ["게임 디자인"],
+    "nodes": [
+      {"id": "b-n1", "label": "블록 조립 규칙", "type": "규칙", "tags": ["조립", "규칙", "블록"],
+       "summary": "블록은 정해진 면끼리만 붙는다. 규칙은 화면에서 바로 읽혀야 한다."},
+      {"id": "b-n2", "label": "잘못 놓을 수 없는 블록 모양", "type": "원칙", "tags": ["조립", "오류", "형태", "블록"],
+       "summary": "맞지 않는 자리에는 물리적으로 들어가지 않는 요철 모양. 설명 없이도 실수를 막는다."},
+      {"id": "b-n3", "label": "오조작 방지 설계", "type": "원칙", "tags": ["오류", "방지", "포카요케"],
+       "summary": "플레이어가 실수할 수 있는 조작 자체를 없앤다. 경고 문구보다 구조로 막는다."},
+      {"id": "b-n4", "label": "스냅 피드백", "type": "기법", "tags": ["피드백", "촉각"],
+       "summary": "맞는 자리에 가까이 가면 딸깍 붙는 소리와 진동을 준다."},
+      {"id": "b-n5", "label": "되돌리기 버튼", "type": "기능", "tags": ["되돌리기", "복구"],
+       "summary": "잘못 놓아도 한 번에 되돌릴 수 있어 실수의 대가가 작다."},
+      {"id": "b-n6", "label": "단계별 튜토리얼", "type": "기법", "tags": ["튜토리얼", "학습"],
+       "summary": "첫 판에서는 맞는 자리만 밝게 보여 주고 점점 힌트를 줄인다."},
+      {"id": "b-n7", "label": "색상 짝 맞추기 힌트", "type": "기법", "tags": ["색상", "힌트"],
+       "summary": "붙을 수 있는 면끼리 같은 색 테두리를 준다."},
+      {"id": "b-n8", "label": "난이도 곡선", "type": "개념", "tags": ["난이도", "레벨"],
+       "summary": "새 규칙은 한 번에 하나씩, 앞 판에서 익힌 것 위에 쌓는다."},
+      {"id": "b-n9", "label": "플레이 테스트 관찰", "type": "방법", "tags": ["플레이테스트", "관찰"],
+       "summary": "설명하지 않고 지켜보며 어디서 손이 멈추는지 기록한다."},
+      {"id": "b-n10", "label": "실패 비용 낮추기", "type": "원칙", "tags": ["실패", "비용"],
+       "summary": "틀렸을 때 잃는 시간이 짧으면 플레이어가 더 과감하게 시도한다."}
+    ],
+    "edges": [
+      {"id": "b-e1", "source": "b-n2", "target": "b-n3", "relation": "applies_to", "summary": "모양으로 막는 것이 가장 확실한 오조작 방지다."},
+      {"id": "b-e2", "source": "b-n1", "target": "b-n2", "relation": "constrains"},
+      {"id": "b-e3", "source": "b-n4", "target": "b-n1", "relation": "supports"},
+      {"id": "b-e4", "source": "b-n5", "target": "b-n10", "relation": "enables"},
+      {"id": "b-e5", "source": "b-n6", "target": "b-n1", "relation": "teaches"},
+      {"id": "b-e6", "source": "b-n7", "target": "b-n2", "relation": "complements"},
+      {"id": "b-e7", "source": "b-n9", "target": "b-n8", "relation": "informs"},
+      {"id": "b-e8", "source": "b-n3", "target": "b-n10", "relation": "reduces"}
+    ]
+  }
+}

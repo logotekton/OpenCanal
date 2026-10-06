@@ -1,0 +1,100 @@
+{
+  "nodes": [
+    {
+      "id": "q",
+      "kind": "query",
+      "label": "모듈러 건축의 현장 조립 오류를 줄일 아이디어"
+    },
+    {
+      "id": "s-a1",
+      "kind": "source",
+      "label": "현장 조립 오류",
+      "provenance": [
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n2"
+        }
+      ]
+    },
+    {
+      "id": "s-a2",
+      "kind": "source",
+      "label": "접합부 상세",
+      "provenance": [
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n3"
+        }
+      ]
+    },
+    {
+      "id": "s-a3",
+      "kind": "source",
+      "label": "공차 관리",
+      "provenance": [
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n4"
+        }
+      ]
+    },
+    {
+      "id": "n-a",
+      "kind": "new",
+      "label": "접합부 오차 흡수 슬롯",
+      "summary": "볼트 구멍을 긴 슬롯으로 바꿔 치수 오차를 현장에서 흡수한다.",
+      "provenance": [
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n3"
+        },
+        {
+          "subbrain_id": "sb_A",
+          "version": 1,
+          "node_id": "a-n4"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "q",
+      "target": "s-a1",
+      "relation": "requires"
+    },
+    {
+      "id": "e2",
+      "source": "q",
+      "target": "s-a2",
+      "relation": "requires"
+    },
+    {
+      "id": "e3",
+      "source": "n-a",
+      "target": "s-a2",
+      "relation": "extends"
+    },
+    {
+      "id": "e4",
+      "source": "n-a",
+      "target": "s-a3",
+      "relation": "requires"
+    },
+    {
+      "id": "e5",
+      "source": "n-a",
+      "target": "s-a1",
+      "relation": "applies_to"
+    }
+  ],
+  "synthesizer": {
+    "kind": "client_llm",
+    "model": "oracle-handwritten",
+    "protocol_version": "opencanal-synthesis/0.1"
+  }
+}
