@@ -647,6 +647,8 @@ class Service:
             "canal_id": canal.id,
             "host_subbrain_id": host.subbrain_id,
             "host_version": host.version,
+            # The caller's own sentence: the protocol labels the query node with it (not other users' text).
+            "query": a.query,
             "query_mode_used": result.query_mode_used.value,
             "query_terms": list(result.query_terms),
             # No display names here (NEVER-09: they are under untrusted_data.subbrains). matched_terms stay: they
