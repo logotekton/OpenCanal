@@ -13,12 +13,17 @@ Plaintext MCP tokens are printed once, when created; only their hashes are store
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
+import secrets
+import signal
+import sqlite3
 import sys
+import threading
 import unicodedata
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +41,8 @@ DEFAULT_BACKUP_DIR = REPO_ROOT / "backups"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# SQLite treats these files next to a DB as part of it (WAL mode is the Store default).
+SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
 
 
 class CliError(Exception):
@@ -297,6 +304,28 @@ def cmd_seed_fixtures(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+@contextmanager
+def _sigterm_closes_store() -> Iterator[None]:
+    """Turn SIGTERM into SystemExit(143) so the enclosing `_open_store` closes the DB.
+
+    uvicorn handles SIGTERM itself, then restores the previous handler and raises the signal again.
+    With the default handler that kills the process before Store.close(), leaving <db>-wal/-shm
+    behind (and post-checkpoint writes only in the -wal file). Closing checkpoints and removes them.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def terminate(signum: int, _frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    previous = signal.signal(signal.SIGTERM, terminate)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -309,7 +338,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             "localhost Host 헤더만 받습니다.",
             file=sys.stderr,
         )
-    with _open_store(args) as (store, _):
+    with _open_store(args) as (store, _), _sigterm_closes_store():
         app = create_app(_service(args, store))
         config = uvicorn.Config(app, host=args.host, port=args.port, log_level=args.log_level)
         install_token_log_filter()  # after uvicorn configured its handlers
@@ -319,14 +348,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def cmd_mcp_stdio(args: argparse.Namespace) -> int:
-    from .mcp_server import build_mcp
+    from .mcp_server import build_mcp, install_token_log_filter
 
     token = (os.environ.get("OPENCANAL_TOKEN") or "").strip() or None
     if token is None:
         # Still serve: fail closed means tools/list [] and UNAUTHORIZED, never a default user.
         print("경고: OPENCANAL_TOKEN이 없습니다. 모든 도구 호출은 UNAUTHORIZED입니다.", file=sys.stderr)
     with _open_store(args) as (store, _):
-        build_mcp(_service(args, store), stdio_token=token).run("stdio")
+        server = build_mcp(_service(args, store), stdio_token=token)
+        install_token_log_filter()  # stderr log lines get the same token mask as `serve`
+        server.run("stdio")
     return 0
 
 
@@ -413,12 +444,101 @@ def cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sqlite_files(db: Path) -> list[Path]:
+    """The DB path and the sidecars SQLite reads as part of that database."""
+    return [db, *(Path(f"{db}{suffix}") for suffix in SQLITE_SIDECARS)]
+
+
+def _refuse_existing_db_files(target: Path) -> None:
+    found = [path for path in _sqlite_files(target) if os.path.lexists(path)]
+    if not found:
+        return
+    if found == [target]:
+        raise CliError(f"이미 있는 파일은 덮어쓰지 않습니다: {target} (새 파일 경로를 주세요)")
+    raise CliError(
+        "복원하지 않습니다. 대상 경로에 이전 DB의 파일이 남아 있습니다: "
+        + ", ".join(str(path) for path in found)
+        + ". SQLite는 -wal/-shm/-journal 파일을 DB의 일부로 읽기 때문에, 남겨 두면 백업 위에 "
+        "백업 이후의 기록이 다시 적용되거나 DB가 손상됩니다. 서버를 멈춘 뒤 이 파일들을 DB 파일과 "
+        "함께 다른 곳으로 옮기거나, 다른 새 경로로 복원하세요."
+    )
+
+
+def _check_sqlite_image(path: Path) -> None:
+    # immutable=1: read without locks or sidecar files, so checking leaves nothing behind.
+    uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            row = conn.execute("PRAGMA quick_check").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise CliError("백업 안의 DB 이미지가 손상되었습니다 (복원하지 않음)") from exc
+    if not row or row[0] != "ok":
+        raise CliError("백업 안의 DB 이미지가 손상되었습니다 (복원하지 않음)")
+
+
+def _fsync_path(path: Path, *, directory: bool = False) -> None:
+    fd = os.open(path, os.O_RDONLY | (getattr(os, "O_DIRECTORY", 0) if directory else 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _copy_exclusive(source: Path, target: Path) -> None:
+    """Fallback when the filesystem has no hard links: O_EXCL copy, removing only what this call created."""
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(source.read_bytes())
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+
+
+def _restore_db_file(target: Path, data: bytes) -> None:
+    """Write the restored DB so that `target` either holds the whole checked image or does not exist.
+
+    The image goes to a private temp file next to the target first; it is linked into place only after
+    it is complete, flushed and passes SQLite's quick_check. Only that temp file is ever removed.
+    """
+    temp = target.parent / f".{target.name}.restore-{secrets.token_hex(8)}.tmp"
+    try:
+        try:
+            Store.restore_bytes(temp, data)  # O_EXCL, 0600; refuses data that is not a SQLite image
+        except ValueError as exc:
+            raise CliError("백업 안의 데이터가 SQLite DB가 아닙니다 (복원하지 않음)") from exc
+        os.chmod(temp, 0o600)
+        _fsync_path(temp)
+        _check_sqlite_image(temp)
+        _refuse_existing_db_files(target)  # again: something may have appeared since the first check
+        try:
+            os.link(temp, target)  # atomic, and never replaces an existing file
+        except OSError as exc:  # FileExistsError (EEXIST) is re-raised here and reported below
+            if exc.errno not in (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.EMLINK):
+                raise
+            _copy_exclusive(temp, target)
+        os.chmod(target, 0o600)
+        with suppress(OSError):
+            _fsync_path(target.parent, directory=True)
+    except FileExistsError as exc:  # the target appeared after the checks; os.link refused to replace it
+        raise CliError(f"이미 있는 파일은 덮어쓰지 않습니다: {target}") from exc
+    except OSError as exc:
+        raise CliError(f"복원 파일을 쓰지 못했습니다: {target} ({exc.strerror or exc})") from exc
+    finally:
+        for leftover in _sqlite_files(temp):
+            leftover.unlink(missing_ok=True)
+
+
 def cmd_restore(args: argparse.Namespace) -> int:
     if not getattr(args, "db", None):
         raise CliError("restore에는 --db PATH가 필요합니다 (새 파일 경로)")
     target = Path(args.db)
-    if target.exists():
-        raise CliError(f"이미 있는 파일은 덮어쓰지 않습니다: {target}")
+    _refuse_existing_db_files(target)
     source = Path(args.in_file)
     if not source.is_file():
         raise CliError(f"백업 파일이 없습니다: {source}")
@@ -427,10 +547,16 @@ def cmd_restore(args: argparse.Namespace) -> int:
         data = crypto.decrypt_backup(key, source.read_bytes())
     except Exception as exc:  # Fernet InvalidToken is not a ValueError
         raise CliError("백업을 복호화할 수 없습니다 (다른 키이거나 손상된 파일)") from exc
-    target.parent.mkdir(parents=True, exist_ok=True)
-    Store.restore_bytes(target, data)
-    os.chmod(target, 0o600)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise CliError(f"복원 경로를 만들 수 없습니다: {target.parent} ({exc.strerror or exc})") from exc
+    _restore_db_file(target, data)
     print(f"복원 완료: {target}")
+    print(
+        "이 파일을 다른 경로로 옮겨 쓸 때는 그 경로의 -wal/-shm/-journal 파일을 먼저 치우세요 "
+        "(남아 있으면 SQLite가 복원본 위에 다시 적용합니다)."
+    )
     return 0
 
 

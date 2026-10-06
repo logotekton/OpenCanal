@@ -49,10 +49,10 @@ _INSTRUCTIONS_KO = f"""\
 5. 입력 서브브레인의 노드는 kind "source" 노드로 앵커한다. provenance에 (subbrain_id, version, node_id)를 정확히 1개 적고, 라벨은 인용한 노드의 라벨을 글자 그대로 복사한다.
 6. kind "new" 노드는 서로 다른 주인의 서브브레인을 잇는 새 개념이다. 서로 다른 주인의 노드를 포함해 출처를 {NEW_NODE_MIN_REFS}개 이상 인용한다. 입력에 이미 있는 라벨을 다시 쓰지 않는다.
 7. 모든 노드는 질의 노드에서 엣지 방향과 무관하게 {MAX_QUERY_HOPS}홉 안에 있어야 한다.
-8. 창발 엣지(유효 출처의 주인이 2명 이상인 엣지)를 1개 이상 만든다. 호스트 서브브레인에 닿는 창발 엣지를 우선한다.
+8. 창발 엣지를 1개 이상 만든다. 창발 엣지는 양 끝 노드가 인용한 출처의 주인을 합쳐 2명 이상인 엣지다. 엣지에 직접 적는 provenance는 근거일 뿐이라 유효성만 검사하고, 창발이나 호스트 판정에는 쓰지 않는다. 서로 다른 주인의 노드를 함께 인용하는 new 노드를 다른 노드와 잇거나, 서로 다른 주인의 노드를 앵커한 source 노드끼리 잇는다. 창발 엣지 중 1개 이상은 한쪽 끝 노드가 호스트 서브브레인 노드를 인용해야 한다.
 9. relation은 relations 목록에 있는 값만 쓴다.
-10. 창발 엣지마다 rationale을 {RATIONALE_MIN_CHARS}~{RATIONALE_MAX_CHARS}자로 구체적으로 쓴다. 무엇이 무엇에 대응하는지, 왜 성립하는지 적고 엣지마다 다른 문장을 쓴다. 연결이 성립하는 조건은 applies_when에 적는다.
-11. 시너지, 혁신, 융합 같은 일반어만으로 된 라벨을 쓰지 않는다. 입력 서브브레인에 이미 있는 엣지를 그대로 옮기지 않는다.
+10. 창발 엣지마다 rationale을 정규화 기준 {RATIONALE_MIN_CHARS}~{RATIONALE_MAX_CHARS}자로 구체적으로 쓴다. 정규화 = NFKC, 보이지 않는 문자(서식 문자, 한글 채움 문자, 이형 선택자)와 구두점을 공백으로, 소문자, 연속 공백을 하나로, 앞뒤 공백 제거. 무엇이 무엇에 대응하는지, 왜 성립하는지 적고 엣지마다 다른 문장을 쓴다. rationale을 비교할 때는 각 엣지의 양 끝 노드 라벨을 같은 자리표시자로 바꾸므로, 노드 이름만 갈아 끼운 틀 문장도 같은 문장이다. 연결이 성립하는 조건은 applies_when에 적는다.
+11. 시너지, 혁신, 융합 같은 일반어만으로 된 라벨을 쓰지 않는다. 입력 서브브레인에 이미 있는 엣지(같은 두 노드, 방향 무관)를 source 노드끼리 그대로 옮기지 않는다. 창발 여부와 무관하게 거부된다.
 12. 노드 {MAX_DELTA_NODES}개, 엣지 {MAX_DELTA_EDGES}개 이하로 만든다.
 13. 타당하지만 뻔한 연결은 주인의 사람 평가에서 0점이다. 한 사람의 두뇌만으로는 나오지 않았을 연결을 찾는다.
 14. synthesizer에는 kind "client_llm", 사용한 모델 이름, protocol_version "{PROTOCOL_VERSION}"을 적는다.
@@ -67,10 +67,10 @@ _INSTRUCTIONS_EN = f"""\
 5. Anchor input subbrain nodes as kind "source" nodes: exactly one provenance ref (subbrain_id, version, node_id), and copy the cited node's label exactly.
 6. Kind "new" nodes are new concepts that bridge subbrains of different owners. Cite at least {NEW_NODE_MIN_REFS} provenance refs, including nodes of different owners. Do not reuse a label that already exists in the inputs.
 7. Every node must be within {MAX_QUERY_HOPS} hops of the query node, ignoring edge direction.
-8. Create at least one emergent edge (an edge whose effective provenance has two or more owners). Prefer emergent edges that touch the host subbrain.
+8. Create at least one emergent edge: an edge whose two end nodes together cite nodes of two or more owners. Provenance written on the edge itself is evidence only; it is checked for validity and never used to decide emergence or host-touching. Connect a new node that cites nodes of different owners, or link source nodes anchored in different owners' subbrains. At least one emergent edge must have an end node that cites a host subbrain node.
 9. Use only relations from the relations list.
-10. Give every emergent edge a specific rationale of {RATIONALE_MIN_CHARS}-{RATIONALE_MAX_CHARS} characters: what maps to what and why it holds, with different wording per edge. State the condition under which the connection holds in applies_when.
-11. Avoid labels made only of generic words such as 시너지, 혁신, 융합 (synergy, innovation, convergence). Do not copy edges that already exist in an input subbrain.
+10. Give every emergent edge a specific rationale of {RATIONALE_MIN_CHARS}-{RATIONALE_MAX_CHARS} normalized characters. Normalization = NFKC, invisible characters (format characters, Hangul fillers, variation selectors) and punctuation become spaces, lowercase, runs of spaces become one, trim. Say what maps to what and why it holds, with different wording per edge. Rationales are compared with both end-node labels of each edge replaced by one placeholder, so a template with only the node names swapped is the same sentence. State the condition under which the connection holds in applies_when.
+11. Avoid labels made only of generic words such as 시너지, 혁신, 융합 (synergy, innovation, convergence). Do not copy an edge that already exists in an input subbrain (same two nodes, either direction) between source nodes; it is rejected whether or not it is emergent.
 12. Keep it to at most {MAX_DELTA_NODES} nodes and {MAX_DELTA_EDGES} edges.
 13. A valid but obvious connection scores 0 in the owner's human rating. Look for connections that no single brain would have produced alone.
 14. Set synthesizer to kind "client_llm", the model you used, and protocol_version "{PROTOCOL_VERSION}".
@@ -89,20 +89,30 @@ _RULES: tuple[str, ...] = (
     "[QUERY_NODE_COUNT] query 노드는 정확히 1개다. / There is exactly one query node.",
     f"[OFF_QUERY_NODE] 모든 노드가 질의 노드에서 무방향 {MAX_QUERY_HOPS}홉 안에 있다. "
     f"/ Every node is within {MAX_QUERY_HOPS} undirected hops of the query node.",
-    "[NO_EMERGENCE] 창발 엣지가 1개 이상 있다. 창발 엣지 = 유효 출처(양 끝 노드의 출처 ∪ 엣지의 출처)의 주인이 2명 이상. "
-    "/ At least one emergent edge: its effective provenance (both endpoints' refs plus the edge's refs) "
-    "spans two or more owners.",
-    "[HOST_NOT_TOUCHED] 창발 엣지 중 1개 이상이 호스트 서브브레인을 인용한다. "
-    "/ At least one emergent edge cites the host subbrain.",
+    "[NO_EMERGENCE] 창발 엣지가 1개 이상 있다. 창발 엣지 = 양 끝 노드가 인용한 유효 출처의 주인을 합쳐 2명 이상인 엣지. "
+    "엣지에 직접 적은 출처는 근거라서 유효성만 검사하고, 창발을 만들지 않는다. "
+    "/ At least one emergent edge: the valid refs cited by its two end nodes span two or more owners. "
+    "Refs written on the edge itself are evidence, only checked for validity, and never create emergence.",
+    "[HOST_NOT_TOUCHED] 창발 엣지 중 1개 이상은 양 끝 노드 중 하나가 호스트 서브브레인 노드를 인용한다. "
+    "엣지에 직접 적은 호스트 출처는 세지 않는다. "
+    "/ At least one emergent edge has an end node that cites a host subbrain node; "
+    "a host ref written on the edge itself does not count.",
     "[RELATION_NOT_ALLOWED] 엣지 relation은 통제 어휘만 쓴다. / Edge relations come from the controlled vocabulary only.",
     f"[RATIONALE_MISSING] 창발 엣지마다 정규화 후 {RATIONALE_MIN_CHARS}~{RATIONALE_MAX_CHARS}자 rationale이 있다. "
-    f"/ Every emergent edge has a rationale of {RATIONALE_MIN_CHARS}-{RATIONALE_MAX_CHARS} characters after normalization.",
-    "[NOT_NOVEL] new 노드 라벨이 입력 서브브레인의 라벨과 같지 않고, 양 끝이 source인 창발 엣지가 입력 엣지를 그대로 옮긴 것이 아니다. "
-    "/ New node labels differ from every input label, and source-to-source emergent edges do not copy an input edge.",
+    "정규화 = NFKC, 보이지 않는 문자와 구두점을 공백으로, 소문자, 연속 공백을 하나로, 앞뒤 공백 제거. "
+    f"/ Every emergent edge has a rationale of {RATIONALE_MIN_CHARS}-{RATIONALE_MAX_CHARS} characters after normalization "
+    "(NFKC; invisible characters and punctuation become spaces; lowercase; runs of spaces become one; trim).",
+    "[NOT_NOVEL] new 노드의 정규화 라벨이 입력 서브브레인의 어떤 라벨과도 같지 않다. 양 끝이 source인 엣지는 창발 여부와 무관하게 "
+    "입력 서브브레인에 이미 있는 엣지(같은 두 노드, 방향 무관)를 그대로 옮긴 것이 아니다. "
+    "/ A new node's normalized label differs from every input label, and no source-to-source edge, emergent or not, "
+    "copies an edge that already exists in an input subbrain (same two nodes, either direction).",
     "[GENERIC_LABEL] new 노드 라벨이 금지 일반어(시너지, 혁신, 융합 등)만으로 이뤄지지 않는다. "
     "/ A new node label is not made only of banned generic words.",
-    f"[TEMPLATED_RATIONALE] rationale이 다른 엣지와 똑같은 창발 엣지의 비율이 {_PCT}% 이하다. "
-    f"/ At most {_PCT}% of emergent edges share an identical normalized rationale.",
+    f"[TEMPLATED_RATIONALE] rationale이 다른 엣지와 같은 창발 엣지의 비율이 {_PCT}% 이하다. 정규화한 rationale에서 "
+    "각 엣지의 양 끝 노드 라벨(정규화)을 같은 자리표시자로 바꾼 뒤 비교하므로, 노드 이름만 갈아 끼운 틀 문장도 같은 문장이다. "
+    f"/ At most {_PCT}% of emergent edges share the same rationale. Normalized rationales are compared with both "
+    "end-node labels of each edge (normalized) replaced by one placeholder, so a template with only the node names "
+    "swapped counts as the same sentence.",
     f"[TOO_LARGE] 노드 {MAX_DELTA_NODES}개, 엣지 {MAX_DELTA_EDGES}개 이하. "
     f"/ At most {MAX_DELTA_NODES} nodes and {MAX_DELTA_EDGES} edges.",
     "[SOURCE_MISMATCH] source 노드는 출처가 정확히 1개이고, 라벨이 인용한 노드의 라벨과 정규화 기준으로 같다. "

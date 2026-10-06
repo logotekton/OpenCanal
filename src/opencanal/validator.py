@@ -407,16 +407,27 @@ def _check_emergence(infos: list[_EdgeInfo]) -> list[Violation]:
     if not emergent:
         return [_v(
             ViolationCode.NO_EMERGENCE,
-            "창발 엣지가 없습니다. 서로 다른 주인 2명 이상의 서브브레인 노드를 출처로 함께 잇는 엣지를 1개 이상 만드세요. "
-            "/ No emergent edge: at least one edge's provenance (both end nodes plus the edge's own refs) "
-            "must span subbrains of 2 or more different owners.",
+            "창발 엣지가 없습니다. 창발은 엣지 양 끝 노드가 인용한 출처의 주인만으로 정합니다. "
+            "엣지에 직접 적은 출처는 근거일 뿐 창발을 만들지 않습니다. 양 끝 노드의 출처를 합쳐 주인이 2명 이상인 엣지를 "
+            "1개 이상 만드세요. 예: 서로 다른 주인의 노드를 함께 인용하는 new 노드를 만들어 다른 노드와 잇거나, "
+            "한 주인의 노드를 앵커한 source 노드와 다른 주인의 노드를 앵커한 source 노드를 이으세요. "
+            "/ No emergent edge. Emergence is decided only by the owners of the refs cited by an edge's two END NODES; "
+            "refs written on the edge itself are evidence and never make it emergent. Make at least one edge whose two "
+            "end nodes together cite subbrains of 2 or more different owners: e.g. connect a new node that cites nodes "
+            "of both owners, or link a source node anchored in one owner's subbrain to a source node anchored in "
+            "another owner's subbrain.",
         )]
     if not any(info.host_touching for info in emergent):
         return [_v(
             ViolationCode.HOST_NOT_TOUCHED,
-            "호스트 서브브레인에 닿는 창발 엣지가 없습니다. 창발 엣지 중 1개 이상은 호스트 서브브레인 노드를 출처에 포함해야 합니다. "
-            "/ No emergent edge touches the host subbrain; at least one emergent edge must include "
-            "a host subbrain node in its provenance.",
+            "호스트 서브브레인에 닿는 창발 엣지가 없습니다. 호스트에 닿는지는 엣지 양 끝 노드의 출처로만 정하고, "
+            "엣지에 직접 적은 호스트 출처는 세지 않습니다. 창발 엣지 1개 이상의 한쪽 끝 노드가 호스트 서브브레인 노드를 "
+            "인용하게 하세요. 예: 호스트 노드와 다른 주인의 노드를 함께 인용하는 new 노드를 만들어 잇거나, "
+            "호스트 노드를 앵커한 source 노드를 다른 주인의 노드를 인용한 노드와 이으세요. "
+            "/ No emergent edge touches the host subbrain. Host-touching is decided only by the refs of an edge's two "
+            "END NODES; a host ref written on the edge itself does not count. Make at least one emergent edge with an "
+            "end node that cites a host subbrain node: e.g. connect a new node that cites both a host node and another "
+            "owner's node, or link a source node anchored in the host subbrain to a node citing another owner.",
         )]
     return []
 
@@ -441,8 +452,10 @@ def _check_rationales(infos: list[_EdgeInfo]) -> list[Violation]:
         out.append(_v(
             ViolationCode.RATIONALE_MISSING,
             f"창발 엣지 {_q(edge.id)}의 {ko}. 이 연결이 왜 성립하는지 정규화 기준 {bounds}자로 쓰세요. "
+            f"정규화는 보이지 않는 문자와 구두점을 공백으로 바꾸고 연속 공백을 하나로 줄인 뒤 셉니다. "
             f"/ Emergent edge {_q(edge.id)} {en}; explain why the link holds in "
-            f"{RATIONALE_MIN_CHARS}-{RATIONALE_MAX_CHARS} normalized chars.",
+            f"{RATIONALE_MIN_CHARS}-{RATIONALE_MAX_CHARS} normalized chars "
+            f"(invisible characters and punctuation count as spaces, and runs of spaces count as one).",
             edge_id=edge.id,
         ))
     return out
@@ -458,9 +471,11 @@ def _check_novelty(sub: DeltabrainSubmission, idx: _CanalIndex, infos: list[_Edg
         if label and label in idx.all_labels:
             out.append(_v(
                 ViolationCode.NOT_NOVEL,
-                f"new 노드 {_q(node.id)}의 라벨이 커널 입력 서브브레인에 이미 있는 라벨과 같습니다. "
+                f"new 노드 {_q(node.id)}의 라벨이 정규화하면 커널 입력 서브브레인에 이미 있는 라벨과 같습니다"
+                f"(대소문자, 구두점, 보이지 않는 문자, 연속 공백의 차이는 무시됩니다). "
                 f"기존 개념이면 source 노드로 인용하고, 새 개념이면 그 차이가 드러나는 라벨을 쓰세요. "
-                f"/ New node {_q(node.id)} label already exists in a canal input subbrain; "
+                f"/ New node {_q(node.id)} label equals, after normalization (case, punctuation, invisible characters "
+                f"and extra spaces are ignored), a label in a canal input subbrain; "
                 f"anchor it as a source node, or name what is actually new.",
                 node_id=node.id,
             ))
@@ -475,10 +490,13 @@ def _check_novelty(sub: DeltabrainSubmission, idx: _CanalIndex, infos: list[_Edg
             subbrain_id, version = copied
             out.append(_v(
                 ViolationCode.NOT_NOVEL,
-                f"엣지 {_q(edge.id)}는 입력 서브브레인 ({_q(subbrain_id)}, v{version})에 이미 있는 엣지를 옮긴 것입니다. "
-                f"입력에 없는 새 연결을 만드세요. "
+                f"엣지 {_q(edge.id)}는 입력 서브브레인 ({_q(subbrain_id)}, v{version})에 이미 있는 엣지(같은 두 노드, "
+                f"방향 무관)를 옮긴 것입니다. 양 끝이 source인 엣지는 창발 여부와 무관하게 이 검사를 받고, 엣지에 붙인 "
+                f"출처나 relation을 바꿔도 같은 엣지입니다. 이 엣지를 빼거나 입력에 없는 새 연결로 바꾸세요. "
                 f"/ Edge {_q(edge.id)} copies an edge that already exists in input subbrain "
-                f"({_q(subbrain_id)}, v{version}); propose a connection the inputs do not already contain.",
+                f"({_q(subbrain_id)}, v{version}) (same two nodes, either direction). Every source-to-source edge is "
+                f"checked, emergent or not, and changing its relation or edge refs does not make it new; remove it or "
+                f"replace it with a connection the inputs do not already contain.",
                 edge_id=edge.id,
             ))
     return out
@@ -545,17 +563,45 @@ def _check_generic(
     return out
 
 
-def _check_templated(infos: list[_EdgeInfo]) -> list[Violation]:
-    """MUST-Q7: share of emergent edges whose normalized rationale repeats another's <= 20%."""
-    rationales = [
-        (info.edge.id, text)
-        for info in infos
-        if info.emergent and (text := normalize(info.edge.rationale))
-    ]
+# Normalized text keeps only word characters and single spaces, so a punctuation-only placeholder can never
+# collide with rationale text or be matched by a (normalized) label during later replacements.
+_LABEL_PLACEHOLDER = "<>"
+
+
+def _label_skeleton(text: str, labels: Iterable[str]) -> str:
+    """ORACLE v.4 MUST-Q7: every occurrence of an endpoint label in a normalized rationale becomes one placeholder.
+
+    Longest label first, so a label that is part of the other endpoint's label does not split it.
+    Empty labels are skipped: replacing "" would insert the placeholder between every character.
+    """
+    for label in sorted({label for label in labels if label}, key=len, reverse=True):
+        text = text.replace(label, _LABEL_PLACEHOLDER)
+    return text
+
+
+def _check_templated(sub: DeltabrainSubmission, infos: list[_EdgeInfo]) -> list[Violation]:
+    """MUST-Q7: share of emergent edges whose normalized rationale repeats another's <= 20%.
+
+    Two rationales are the same when their normalized texts are equal or, after both endpoint labels of each
+    edge are replaced by the same placeholder (v.4), their skeletons are equal: a template with only the
+    labels swapped is "also" the same sentence, and an exact copy stays a copy.
+    """
+    labels = {node.id: normalize(node.label) for node in sub.nodes}
+    rationales: list[tuple[str, str, str]] = []  # (edge id, normalized text, label skeleton)
+    for info in infos:
+        text = normalize(info.edge.rationale)
+        if info.emergent and text:
+            ends = (labels.get(info.edge.source, ""), labels.get(info.edge.target, ""))
+            rationales.append((info.edge.id, text, _label_skeleton(text, ends)))
     if not rationales:
         return []
-    counts = Counter(text for _, text in rationales)
-    repeated = [edge_id for edge_id, text in rationales if counts[text] > 1]
+    text_counts = Counter(text for _, text, _ in rationales)
+    skeleton_counts = Counter(skeleton for _, _, skeleton in rationales)
+    repeated = [
+        edge_id
+        for edge_id, text, skeleton in rationales
+        if text_counts[text] > 1 or skeleton_counts[skeleton] > 1
+    ]
     total = len(rationales)
     if len(repeated) / total <= TEMPLATED_RATIONALE_MAX_RATIO:
         return []
@@ -563,10 +609,14 @@ def _check_templated(infos: list[_EdgeInfo]) -> list[Violation]:
     limit = round(100 * TEMPLATED_RATIONALE_MAX_RATIO)
     return [_v(
         ViolationCode.TEMPLATED_RATIONALE,
-        f"창발 엣지 {total}개 중 {len(repeated)}개({pct}%)의 rationale이 다른 엣지와 똑같습니다(허용 {limit}% 이하): "
-        f"{_id_list(repeated)}. 엣지마다 그 연결에만 해당하는 이유를 쓰세요. "
-        f"/ {len(repeated)} of {total} emergent edges ({pct}%) share an identical rationale (max {limit}%): "
-        f"{_id_list(repeated)}; write a rationale specific to each link.",
+        f"창발 엣지 {total}개 중 {len(repeated)}개({pct}%)의 rationale이 다른 엣지와 같은 문장입니다(허용 {limit}% 이하): "
+        f"{_id_list(repeated)}. 비교 전에 정규화하고 각 엣지의 양 끝 노드 라벨을 같은 자리표시자로 바꾸므로, "
+        f"노드 이름만 갈아 끼운 틀 문장도 같은 문장입니다. 엣지마다 무엇이 무엇에 대응하는지, 왜 그 연결이 성립하는지를 "
+        f"그 연결에만 해당하는 내용으로 다시 쓰세요. "
+        f"/ {len(repeated)} of {total} emergent edges ({pct}%) share the same rationale (max {limit}%): "
+        f"{_id_list(repeated)}. Rationales are compared after normalization with both end-node labels of each edge "
+        f"replaced by one placeholder, so a template with only the node names swapped is the same sentence; "
+        f"rewrite each one to say what maps to what and why this particular link holds.",
     )]
 
 
@@ -658,6 +708,6 @@ def validate_deltabrain(
         *_check_rationales(infos),
         *_check_novelty(submission, idx, infos),
         *_check_generic(submission, generic_terms, josa_suffixes, josa_min_stem_length),
-        *_check_templated(infos),
+        *_check_templated(submission, infos),
     ]
     return ValidationResult(ok=not violations, violations=violations, stats=_stats(submission, idx, infos))

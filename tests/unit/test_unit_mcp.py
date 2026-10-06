@@ -235,6 +235,49 @@ def test_access_log_never_contains_full_token() -> None:
     assert GOOD not in joined
 
 
+MISTYPED_PATHS = (
+    f"/mcp//{GOOD}",
+    f"/x/{GOOD}",
+    f"/{GOOD}",
+    f"/MCP/{GOOD}",
+    f"/mcp/%20{GOOD}%20",
+    f"/mcp/{GOOD}/extra",
+    f"/x?t={GOOD}&u=1",
+    f"/health?{GOOD}",
+    f"/mcp{GOOD}",
+)
+
+
+def test_access_log_masks_full_token_in_mistyped_urls() -> None:
+    """TIER-2: a token anywhere in a mistyped URL (404s included) never reaches the server log in full."""
+    fake = FakeService()
+    records: list[str] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(self.format(record))
+
+    capture = Capture()
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    headers = {"Accept": "application/json, text/event-stream"}
+    names = ("uvicorn.access", "uvicorn.error")
+    with serve_in_thread(lambda: create_app(fake), log_level="debug") as base:
+        for name in names:
+            logging.getLogger(name).addHandler(capture)
+        try:
+            statuses = [httpx.post(base + path, json=body, headers=headers).status_code for path in MISTYPED_PATHS]
+        finally:
+            for name in names:
+                logging.getLogger(name).removeHandler(capture)
+    assert 404 in statuses
+    access_lines = [line for line in records if '"POST ' in line]
+    assert len(access_lines) == len(MISTYPED_PATHS)  # every request was logged, so the check is not vacuous
+    joined = "\n".join(records)
+    assert GOOD not in joined
+    assert GOOD[3:] not in joined
+    assert all("…" in line for line in access_lines), access_lines
+
+
 # ---------------------------------------------------------------------------
 # FastMCP subclass without HTTP (stdio path uses the same handlers)
 # ---------------------------------------------------------------------------
@@ -318,6 +361,11 @@ def test_mask_helpers() -> None:
     masked = mask_tokens_in_text(text)
     assert GOOD not in masked and PRO not in masked
     assert f"/mcp/{GOOD[:6]}…" in masked
+    for path in MISTYPED_PATHS:
+        line = mask_tokens_in_text(f'"POST {path} HTTP/1.1" 404')
+        assert GOOD not in line and GOOD[3:] not in line, path
+        assert "…" in line, path
+        assert mask_tokens_in_text(line) == line  # idempotent: filters may run on a record twice
 
 
 def test_token_filter_keeps_uvicorn_access_args_shape() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import json
@@ -10,6 +11,7 @@ import sqlite3
 import stat
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -437,3 +439,273 @@ def test_file_db_wal_and_threads(tmp_path):
     conn = sqlite3.connect(path)
     assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 20
     conn.close()
+
+
+# -- restore refuses SQLite sidecars and never leaves a partial DB (CRY-1) -------------
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_restore_refuses_leftover_sidecar(tmp_path, store, suffix):
+    data = store.snapshot_bytes()
+    target = tmp_path / "o.db"
+    sidecar = tmp_path / f"o.db{suffix}"
+    sidecar.write_bytes(b"left behind by a killed server")
+    with pytest.raises(FileExistsError) as info:
+        Store.restore_bytes(target, data)
+    assert info.value.filename == str(sidecar) and str(sidecar) in str(info.value)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [sidecar.name]  # nothing written, sidecar untouched
+    assert sidecar.read_bytes() == b"left behind by a killed server"
+
+
+def test_restore_refuses_dangling_sidecar_symlink(tmp_path, store):
+    (tmp_path / "o.db-wal").symlink_to(tmp_path / "gone")
+    with pytest.raises(FileExistsError):
+        Store.restore_bytes(tmp_path / "o.db", store.snapshot_bytes())
+    assert not (tmp_path / "o.db").exists()
+
+
+def test_restore_names_the_existing_db_file(tmp_path, store):
+    target = tmp_path / "o.db"
+    target.write_bytes(b"current")
+    with pytest.raises(FileExistsError) as info:
+        Store.restore_bytes(target, store.snapshot_bytes())
+    assert info.value.filename == str(target) and target.read_bytes() == b"current"
+
+
+def test_restore_crash_midway_leaves_no_partial_db(tmp_path, store, monkeypatch):
+    data = store.snapshot_bytes()
+    target = tmp_path / "o.db"
+
+    def crash(fd):
+        raise OSError(errno.EIO, "I/O error")
+
+    monkeypatch.setattr(os, "fsync", crash)
+    with pytest.raises(OSError):
+        Store.restore_bytes(target, data)
+    assert list(tmp_path.iterdir()) == []  # neither the DB nor the temp file
+    monkeypatch.undo()
+    Store.restore_bytes(target, data)  # a retry is not blocked
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["o.db"]
+    assert target.read_bytes() == data and stat.S_IMODE(os.stat(target).st_mode) == 0o600
+
+
+def test_restore_never_replaces_a_db_that_appears_meanwhile(tmp_path, store, monkeypatch):
+    data = store.snapshot_bytes()
+    target = tmp_path / "o.db"
+    real_link = os.link
+
+    def racing_link(src, dst):
+        Path(dst).write_bytes(b"won the race")
+        real_link(src, dst)
+
+    monkeypatch.setattr(os, "link", racing_link)
+    with pytest.raises(FileExistsError):
+        Store.restore_bytes(target, data)
+    assert target.read_bytes() == b"won the race"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["o.db"]
+
+
+def test_restore_without_hard_links_falls_back_to_rename(tmp_path, store, monkeypatch):
+    data = store.snapshot_bytes()
+
+    def no_links(src, dst):
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "link", no_links)
+    Store.restore_bytes(tmp_path / "o.db", data)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["o.db"]
+    assert (tmp_path / "o.db").read_bytes() == data
+
+
+# -- limits are checked inside one BEGIN IMMEDIATE transaction (TIER-1) ----------------
+
+
+def _two_stores(tmp_path):
+    path = tmp_path / "shared.db"
+    first = Store(path, master_key=MASTER_KEY)
+    second = Store(path, master_key=MASTER_KEY)
+    return first, second
+
+
+def _slow(method, delay=0.02):
+    """Widen the window between the count and the write, as a slow process would."""
+    import time
+
+    def wrapped(*args, **kwargs):
+        result = method(*args, **kwargs)
+        time.sleep(delay)
+        return result
+
+    return wrapped
+
+
+def _race(calls):
+    barrier = threading.Barrier(len(calls), timeout=10)
+    results: list = [None] * len(calls)
+
+    def run(i, fn):
+        barrier.wait()
+        try:
+            results[i] = fn()
+        except OpenCanalError as exc:
+            results[i] = exc
+        except BaseException as exc:  # pragma: no cover - surfaced by the assertion below
+            results[i] = exc
+
+    threads = [threading.Thread(target=run, args=(i, fn)) for i, fn in enumerate(calls)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results
+
+
+def test_monthly_canal_limit_is_atomic_across_store_instances(tmp_path):
+    first, second = _two_stores(tmp_path)
+    try:
+        first.create_user("앨리스", Tier.FREE, user_id="user_a")
+        sid = first.add_subbrain_version("user_a", doc("건축", "a", ["현장 조립 오류", "접합부 상세"]), "h").subbrain_id
+        fixed = lambda: datetime(2031, 3, 10, 9, 0, tzinfo=timezone.utc)  # noqa: E731
+        for s in (first, second):
+            s.clock = fixed
+            s._count_canals = _slow(s._count_canals)
+        first.create_canal("user_a", sid, 1, "q0", QueryMode.TOPIC, [], canals_per_month=3)
+        stores = [first, second] * 4
+        results = _race([
+            (lambda s=s, i=i: s.create_canal("user_a", sid, 1, f"q{i}", QueryMode.TOPIC, [], canals_per_month=3))
+            for i, s in enumerate(stores, 1)
+        ])
+        refused = [r for r in results if isinstance(r, OpenCanalError)]
+        assert all(isinstance(r, OpenCanalError) or hasattr(r, "id") for r in results), results
+        assert len(results) - len(refused) == 2 and len(refused) == 6
+        assert {r.code for r in refused} == {ErrorCode.LIMIT_EXCEEDED}
+        assert all(r.detail == {"limit": 3, "current": 3, "month": "2031-03"} for r in refused)
+        assert first.count_canals_in_month("user_a", "2031-03") == 3
+        assert second.count_canals_in_month("user_a", "2031-03") == 3
+        audit = first._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'canal.open'").fetchone()[0]
+        assert audit == 3  # refused attempts left nothing behind
+    finally:
+        first.close()
+        second.close()
+
+
+def test_public_subbrain_limit_is_atomic_across_store_instances(tmp_path):
+    first, second = _two_stores(tmp_path)
+    try:
+        first.create_user("앨리스", Tier.FREE, user_id="user_a")
+        sids = [
+            first.add_subbrain_version("user_a", doc(f"t{i}", f"p{i}_", ["가", "나"]), f"h{i}").subbrain_id
+            for i in range(6)
+        ]
+        for s in (first, second):
+            s._count_public = _slow(s._count_public)
+        results = _race([
+            (lambda s=s, sid=sid, i=i: s.set_visibility(
+                "user_a", sid, Visibility.PUBLIC, confirm_hash=f"h{i}", max_public=2))
+            for i, (s, sid) in enumerate(zip([first, second] * 3, sids))
+        ])
+        refused = [r for r in results if isinstance(r, OpenCanalError)]
+        assert len(refused) == 4 and {r.code for r in refused} == {ErrorCode.LIMIT_EXCEEDED}
+        assert first.count_public_subbrains("user_a") == 2
+        # Re-publishing an already public subbrain is not counted against the limit.
+        public = [s for s in first.list_subbrains_for_owner("user_a") if s.visibility == Visibility.PUBLIC]
+        again = first.set_visibility("user_a", public[0].subbrain_id, Visibility.PUBLIC,
+                                     confirm_hash=f"h{sids.index(public[0].subbrain_id)}", max_public=2)
+        assert again.visibility == Visibility.PUBLIC
+        # Going private is never limited.
+        first.set_visibility("user_a", public[0].subbrain_id, Visibility.PRIVATE, max_public=0)
+    finally:
+        first.close()
+        second.close()
+
+
+def test_write_transaction_rolls_back_on_refusal(store, world):
+    store.clock = lambda: datetime(2031, 4, 1, tzinfo=timezone.utc)
+    store.create_canal("user_a", world["sa"], 1, "q", QueryMode.TOPIC, [], canals_per_month=1)
+    with pytest.raises(OpenCanalError) as info:
+        store.create_canal("user_a", world["sa"], 1, "q", QueryMode.TOPIC, [], canals_per_month=1)
+    assert info.value.code == ErrorCode.LIMIT_EXCEEDED
+    assert not store._conn.in_transaction
+    assert store.count_canals_in_month("user_a", "2031-04") == 1
+    # A NOT_FOUND inside the transaction also leaves no transaction open.
+    assert_not_found(store.create_canal, "user_d", world["sa"], 1, "q", QueryMode.TOPIC, [], canals_per_month=9)
+    assert not store._conn.in_transaction
+
+
+# -- deltabrain stats are computed over the identities a viewer is shown (EXP-1) -----
+
+
+def _same_owner_world(store, second_owner: str):
+    """B and B2 (owned by `second_owner`) both cited; edge eb joins a B node to a B2 node."""
+    for uid, name in [("user_a", "앨리스"), ("user_b", "밥빌더"), ("user_c", "캐럴셀")]:
+        store.create_user(name, Tier.PRO, user_id=uid)
+    if second_owner not in {"user_a", "user_b", "user_c"}:
+        store.create_user("프리다", Tier.PRO, user_id=second_owner)
+    sa = store.add_subbrain_version("user_a", doc("건축", "a", ["현장 조립 오류", "접합부 상세"]), "ha").subbrain_id
+    sb = store.add_subbrain_version("user_b", doc("게임", "b", ["블록 조립 규칙", "오조작 방지"]), "hb").subbrain_id
+    sb2 = store.add_subbrain_version(second_owner, doc("게임2", "b", ["블록 조립 규칙", "오조작 방지"]), "hb2").subbrain_id
+    sc = store.add_subbrain_version("user_c", doc("세포", "c", ["형태 상보성", "오류 교정"]), "hc").subbrain_id
+    for owner, sid, h in [("user_a", sa, "ha"), ("user_b", sb, "hb"), (second_owner, sb2, "hb2"), ("user_c", sc, "hc")]:
+        store.set_visibility(owner, sid, Visibility.PUBLIC, confirm_hash=h)
+    members = [
+        CanalMember(subbrain_id=s, version=1, owner_id=o, relevance=0.5, distance=1.0, matched_terms=["조립"])
+        for s, o in [(sb, "user_b"), (sb2, second_owner), (sc, "user_c")]
+    ]
+    canal = store.create_canal("user_a", sa, 1, "모듈러 조립 오류", QueryMode.TOPIC, members)
+    ref = lambda s, n: {"subbrain_id": s, "version": 1, "node_id": n}  # noqa: E731
+    sub = DeltabrainSubmission.model_validate({
+        "nodes": [
+            {"id": "q", "kind": "query", "label": "모듈러 조립 오류"},
+            {"id": "na", "kind": "source", "label": "현장 조립 오류", "provenance": [ref(sa, "a1")]},
+            {"id": "nb", "kind": "source", "label": "블록 조립 규칙", "provenance": [ref(sb, "b1")]},
+            {"id": "nb2", "kind": "source", "label": "오조작 방지", "provenance": [ref(sb2, "b2")]},
+            {"id": "nc", "kind": "source", "label": "형태 상보성", "provenance": [ref(sc, "c1")]},
+        ],
+        "edges": [
+            {"id": "e0", "source": "q", "target": "na", "relation": "requires"},
+            {"id": "e1", "source": "nc", "target": "na", "relation": "applies_to", "rationale": "r1"},
+            {"id": "eb", "source": "nb", "target": "nb2", "relation": "extends", "rationale": "r2"},
+            {"id": "e2", "source": "nb2", "target": "na", "relation": "analogous_to", "rationale": "r3"},
+        ],
+    })
+    same = second_owner == "user_b"
+    true_stats = DeltabrainStats(
+        node_count=5, edge_count=4, new_node_count=0,
+        emergent_edge_ids=["e1", "e2"] if same else ["e1", "eb", "e2"],
+        host_touching_emergent_edge_ids=["e1", "e2"], owners_involved=3 if same else 4,
+    )
+    db = store.save_deltabrain(canal.id, "user_a", sub, true_stats).id
+    store.set_visibility(second_owner, sb2, Visibility.PRIVATE)
+    return db, true_stats
+
+
+@pytest.mark.parametrize("second_owner", ["user_b", "user_f"])
+def test_viewer_stats_do_not_reveal_who_a_masked_contributor_is(second_owner):
+    s = Store(":memory:", master_key=MASTER_KEY)
+    try:
+        db, true_stats = _same_owner_world(s, second_owner)
+        view = s.get_deltabrain_for_viewer("user_c", db)
+        # Same answer whether B2's owner is user_b (plainly shown) or someone else.
+        assert view["stats"] == {"node_count": 5, "edge_count": 4, "new_node_count": 0,
+                                 "emergent_edge_ids": ["e1", "eb", "e2"],
+                                 "host_touching_emergent_edge_ids": ["e1", "e2"], "owners_involved": 4}
+        assert len(view["contributors"]) == 4
+        [listed] = s.list_deltabrains_for_viewer("user_c")
+        assert listed["stats"]["emergent_edge_count"] == 3
+        # The stored record keeps the true values.
+        assert s.get_deltabrain_record(db).stats == true_stats
+        # B2's owner sees B2 plainly, so their stats are the true ones.
+        assert s.get_deltabrain_for_viewer(second_owner, db)["stats"] == true_stats.model_dump(mode="json")
+    finally:
+        s.close()
+
+
+def test_masked_host_does_not_count_as_host_touching(store, world):
+    store.set_visibility("user_a", world["sa"], Visibility.PRIVATE)
+    view = store.get_deltabrain_for_viewer("user_c", world["db"])
+    # e1 (C-A) and e2 (B-A) are still emergent: the masked host is a separate identity.
+    assert view["stats"]["emergent_edge_ids"] == ["e1", "e2"] and view["stats"]["owners_involved"] == 3
+    # Saying which edges touch the host would reveal that the masked contributor is the host.
+    assert view["stats"]["host_touching_emergent_edge_ids"] == []
+    host_view = store.get_deltabrain_for_viewer("user_a", world["db"])
+    assert host_view["stats"] == world["stats"].model_dump(mode="json")

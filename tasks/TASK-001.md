@@ -24,6 +24,7 @@
 - **수용 기준 ID:** MUST-Q0~Q9, MUST-M1·M3·M4, PROV-M2(잠정), MUST-T1, MUST-C1·C2, MUST-E1·E2
 - **금지 동작 ID:** NEVER-01~12
 - 정본: `docs/oracle/ORACLE_MANIFEST.md` v2026-10-06.4
+- 변경 이력: CHANGE-001(빌드), CHANGE-002(v.3), CHANGE-003(v.4 적대 검토 수정)
 
 ## 4. 모듈 소유와 계약
 
@@ -35,7 +36,7 @@
 | V | `validator.py` | `validate_deltabrain()` — ORACLE §4·§5.1을 그대로 구현한다. 모든 위반을 한 번에 돌려준다. 순수 함수 |
 | M | `matching.py` | `match()` 외 — ORACLE §5.4, `config/matching.json` 공식(스텁 docstring). 결정적 |
 | K | `crypto.py` | 토큰 해시, 마스터 키(0600), AES-SIV 기여자 토큰(HKDF 서브키), Fernet 백업 |
-| ST | `store.py` | SQLite. viewer 범위 접근자만 도구에 노출한다. NOT_FOUND로 존재를 숨긴다. 비공개 기여자 마스킹(`get_deltabrain_for_viewer`). 감사 로그 |
+| ST | `store.py` | SQLite. viewer 범위 접근자만 도구에 노출한다. NOT_FOUND로 존재를 숨긴다. 비공개 기여자 마스킹(`get_deltabrain_for_viewer`). 감사 로그. 모든 쓰기는 `BEGIN IMMEDIATE` 트랜잭션이다. 한도 검사는 쓰기와 같은 트랜잭션 안에서 한다: `create_canal(..., *, canals_per_month=None)`, `set_visibility(..., *, max_public=None)` (CHANGE-003, 키워드 전용·기본값 있음) |
 | SV | `service.py`, `protocol.py` | `tools_for`, `dispatch`, 도구 핸들러 전부(아래 §5), 합성 프로토콜 |
 | MCP | `mcp_server.py`, `app.py`, `cli.py`, `__main__.py` | FastMCP 서브클래스(`list_tools`/`call_tool` 재정의 → Service), `/mcp/{token}` streamable HTTP(stateless), stdio(`OPENCANAL_TOKEN`), CLI |
 
@@ -50,12 +51,12 @@
 | `subbrain_get` | `subbrain_id`, `version?` | 내 것이면 그대로, 남의 것이면 `untrusted_data.subbrain` | NOT_FOUND |
 | `subbrain_set_visibility` | `subbrain_id`, `visibility`("public"\|"private"), `version?`, `confirm_hash?` | SubbrainSummary | CONFIRMATION_MISMATCH, LIMIT_EXCEEDED(공개 수), NOT_FOUND |
 | `subbrain_search` | `query`, `limit?`(≤20) | `untrusted_data.results[]` {subbrain_id, version, title, domains, owner_display, relevance, matched_terms} — 공개만, relevance ≥ τ만 | — |
-| `canal_open` | `query`, `host_subbrain_id`, `query_mode?` | `canal_id`, `query_mode_used`, `members[]`(점수), `truncated`, `protocol`, `untrusted_data{notice, host, subbrains[]}` | HOST_NOT_PUBLIC, NOT_FOUND, NO_RELEVANT_SUBBRAIN(커널 미생성·미차감), LIMIT_EXCEEDED(월 커널) |
-| `canal_get` | `canal_id` | 커널 + 지금 공개인 호스트·멤버 내용 (`untrusted_data`). 비공개로 바뀐 호스트·멤버는 `withheld:true`, 내용 없음 (주인 본인에게는 보인다) | NOT_FOUND |
+| `canal_open` | `query`, `host_subbrain_id`, `query_mode?` | `canal_id`, `query_mode_used`, `members[]`(점수·매칭 용어, 표시 이름 없음 — 매칭 용어는 호스트 자신의 질의·서브브레인에서 나온 값), `truncated`, `protocol`, `untrusted_data{notice, host, subbrains[]}` (다른 사용자의 표시 이름은 여기에만) | HOST_NOT_PUBLIC, NOT_FOUND, NO_RELEVANT_SUBBRAIN(커널 미생성·미차감), LIMIT_EXCEEDED(월 커널) |
+| `canal_get` | `canal_id` | 커널 + 지금 공개인 호스트·멤버 내용 (`untrusted_data`, `matched_terms` 포함). 비공개로 바뀐 호스트·멤버는 `{subbrain_id, version, withheld:true}`만, 내용·점수·용어 없음 (주인 본인에게는 보인다) | NOT_FOUND |
 | `canal_submit` | `canal_id`, `deltabrain`(obj) | `deltabrain_id`, `stats` | NOT_CANAL_HOST, HOST_NOT_PUBLIC, VALIDATION_FAILED(`violations[]`), NOT_FOUND |
-| `deltabrain_get` | `deltabrain_id` | `untrusted_data.deltabrain` (store 마스킹 적용), `ratings` 요약 | NOT_FOUND |
+| `deltabrain_get` | `deltabrain_id` | 최상위 `stats`는 숫자만, `rating_summary`(숫자). `untrusted_data.deltabrain`(store 마스킹 적용), `untrusted_data.stats`(엣지 ID 목록), `untrusted_data.ratings`. 통계는 보는 사람에게 보이는 신원 기준 (NEVER-11 v.4) | NOT_FOUND |
 | `deltabrain_list` | — | `deltabrains[]` 요약 | — |
-| `deltabrain_rate` | `deltabrain_id`, `edge_id`, `novelty`, `validity`, `usefulness` (0/1) | `ok` | NOT_FOUND, NOT_EMERGENT_EDGE, INVALID_ARGUMENT |
+| `deltabrain_rate` | `deltabrain_id`, `edge_id`, `novelty`, `validity`, `usefulness` (0/1) | `ok`, `untrusted_data.edge_id` | NOT_FOUND, NOT_EMERGENT_EDGE(보는 사람의 뷰 기준), INVALID_ARGUMENT |
 | `match_explain` (Pro+) | `query`, `host_subbrain_id`, `query_mode?` | MatchResult 전체(τ 미만 포함), 커널 생성·차감 없음 | HOST_NOT_PUBLIC 아님 — 호스트는 내 서브브레인이면 공개 여부 무관, NOT_FOUND |
 | `deltabrain_export` (Pro+) | `deltabrain_id` | `untrusted_data.graph` {nodes, edges} JSON | NOT_FOUND |
 | `canal_synthesize` (Expert) | — | — | 항상 NOT_AVAILABLE |

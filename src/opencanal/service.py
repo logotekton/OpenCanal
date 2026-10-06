@@ -32,7 +32,7 @@ from .models import (
     User,
     Visibility,
 )
-from .store import Store
+from .store import MONTHLY_CANAL_LIMIT_MESSAGE, PUBLIC_SUBBRAIN_LIMIT_MESSAGE, Store
 
 log = logging.getLogger(__name__)
 
@@ -153,9 +153,11 @@ class _ToolDef:
 _TOOL_DEFS: tuple[_ToolDef, ...] = (
     _ToolDef(
         "subbrain_import",
-        "두뇌 일부(노드·엣지)를 가져와 비공개 서브브레인 버전을 만든다. 경로·이메일·전화번호·URL은 가리고 그 내역을 보고한다. "
+        "두뇌 일부(노드·엣지)를 가져와 비공개 서브브레인 버전을 만든다. 보이지 않는 문자는 빼고, 경로·이메일·전화번호·URL·"
+        "주민등록번호·비밀값(API 키·토큰)은 ID까지 가리고 그 내역을 보고한다. "
         "미리보기와 content_hash를 돌려준다. / Import part of your brain (nodes, edges) as a private subbrain version. "
-        "Paths, emails, phone numbers and URLs are masked and reported. Returns a preview and its content_hash.",
+        "Invisible characters are stripped; paths, emails, phone numbers, URLs, resident registration numbers and "
+        "secrets (API keys, tokens) are masked, ids included, and reported. Returns a preview and its content_hash.",
         SubbrainImportArgs,
         "_subbrain_import",
     ),
@@ -304,8 +306,21 @@ def _graph_from_view(view: dict[str, Any]) -> dict[str, Any]:
     return {"nodes": list(source.get("nodes") or []), "edges": list(source.get("edges") or [])}
 
 
+def _stats_counts(stats: dict[str, Any]) -> dict[str, Any]:
+    """Numbers only. The edge-id lists are host-written strings and stay under untrusted_data (NEVER-09)."""
+    return {
+        "node_count": stats["node_count"],
+        "edge_count": stats["edge_count"],
+        "new_node_count": stats["new_node_count"],
+        "owners_involved": stats["owners_involved"],
+        "emergent_edge_count": len(stats["emergent_edge_ids"]),
+        "host_touching_emergent_edge_count": len(stats["host_touching_emergent_edge_ids"]),
+    }
+
+
 def _ratings_summary(ratings: list[EdgeRating], emergent_edge_ids: list[str], viewer_id: str) -> dict[str, Any]:
-    """Per-edge sums (no rater ids). An edge counts as good when every rating of it is 1/1/1 (HUMAN-01)."""
+    """Per-edge sums (no rater ids) over the edges that are emergent for this viewer (NEVER-11: the viewer's
+    emergent set, never the stored one). An edge counts as good when every rating of it is 1/1/1 (HUMAN-01)."""
     per_edge: dict[str, dict[str, Any]] = {}
     mine: list[dict[str, Any]] = []
     for r in ratings:
@@ -323,7 +338,7 @@ def _ratings_summary(ratings: list[EdgeRating], emergent_edge_ids: list[str], vi
     rated = [agg for eid, agg in per_edge.items() if eid in emergent]
     good = sum(1 for agg in rated if agg["all_three"] == agg["raters"])
     return {
-        "edges": sorted(per_edge.values(), key=lambda a: a["edge_id"]),
+        "edges": sorted(rated, key=lambda a: a["edge_id"]),
         "mine": sorted(mine, key=lambda a: a["edge_id"]),
         "emergent_edge_count": len(emergent),
         "rated_emergent_edge_count": len(rated),
@@ -513,6 +528,7 @@ class Service:
 
     def _subbrain_set_visibility(self, user: User, a: SubbrainSetVisibilityArgs) -> dict[str, Any]:
         current = self._own_summary(user, a.subbrain_id)
+        max_public: Optional[int] = None
         if a.visibility == Visibility.PUBLIC:
             if not a.confirm_hash:
                 raise _err(
@@ -520,18 +536,15 @@ class Service:
                     "공개하려면 미리보기의 content_hash를 confirm_hash로 보내야 합니다 "
                     "/ going public requires the preview's content_hash as confirm_hash",
                 )
+            max_public = self._limits(user).max_public_subbrains
             if current.visibility != Visibility.PUBLIC:
-                limit = self._limits(user).max_public_subbrains
+                # Fast path only. The authoritative count runs inside the store's write transaction
+                # (max_public), so two processes cannot both take the last slot (TIER-1).
                 count = self._store.count_public_subbrains(user.id)
-                if count >= limit:
-                    raise _err(
-                        ErrorCode.LIMIT_EXCEEDED,
-                        "공개 서브브레인 수 한도를 넘습니다 / public subbrain limit reached",
-                        limit=limit,
-                        current=count,
-                    )
+                if count >= max_public:
+                    raise _err(ErrorCode.LIMIT_EXCEEDED, PUBLIC_SUBBRAIN_LIMIT_MESSAGE, limit=max_public, current=count)
         summary = self._store.set_visibility(
-            user.id, a.subbrain_id, a.visibility, version=a.version, confirm_hash=a.confirm_hash
+            user.id, a.subbrain_id, a.visibility, version=a.version, confirm_hash=a.confirm_hash, max_public=max_public
         )
         return {"ok": True, **summary.model_dump(mode="json")}
 
@@ -570,11 +583,13 @@ class Service:
         host = self._host_version(user, a.host_subbrain_id, require_public=True)
         limits = self._limits(user)
         month = self._month()
+        # Fast path (before matching, so the limit wins over NO_RELEVANT_SUBBRAIN). The authoritative count runs
+        # inside store.create_canal's write transaction (canals_per_month), atomic across processes (TIER-1).
         used = self._store.count_canals_in_month(user.id, month)
         if used >= limits.canals_per_month:
             raise _err(
                 ErrorCode.LIMIT_EXCEEDED,
-                "이번 달 커널 수 한도를 넘습니다 / monthly canal limit reached",
+                MONTHLY_CANAL_LIMIT_MESSAGE,
                 limit=limits.canals_per_month,
                 current=used,
                 month=month,
@@ -610,7 +625,10 @@ class Service:
             for c, sv in selected
         ]
         # store.create_canal writes the "canal.open" audit row.
-        canal = self._store.create_canal(user.id, host.subbrain_id, host.version, a.query, result.query_mode_used, members)
+        canal = self._store.create_canal(
+            user.id, host.subbrain_id, host.version, a.query, result.query_mode_used, members,
+            canals_per_month=limits.canals_per_month,
+        )
         return {
             "ok": True,
             "canal_id": canal.id,
@@ -618,16 +636,17 @@ class Service:
             "host_version": host.version,
             "query_mode_used": result.query_mode_used.value,
             "query_terms": list(result.query_terms),
+            # No display names here (NEVER-09: they are under untrusted_data.subbrains). matched_terms stay: they
+            # are terms of the caller's own query or host subbrain, and members[].matched_terms is MUST-M1 evidence.
             "members": [
                 {
                     "subbrain_id": c.subbrain_id,
                     "version": c.version,
-                    "owner_display": sv.owner_display,
                     "relevance": c.relevance,
                     "distance": c.distance,
                     "matched_terms": list(c.matched_terms),
                 }
-                for c, sv in selected
+                for c, _ in selected
             ],
             "truncated": result.truncated,
             "protocol": protocol.synthesis_protocol(),
@@ -641,26 +660,36 @@ class Service:
         ctx_subbrains = self._store.canal_context(canal.id).subbrains
         is_host = canal.host_user_id == user.id
 
+        # NEVER-02 (host included, v.4): a subbrain now private is withheld from everyone but its owner.
         host_sv = self._visible_in_canal(user, ctx_subbrains, canal.host_subbrain_id, canal.host_version, canal.host_user_id)
         host_entry = (
             {**_subbrain_view(host_sv), "withheld": False}
             if host_sv is not None
             else _withheld(canal.host_subbrain_id, canal.host_version)
         )
+        # Member scores are derived from the host too: distance from the host's domains, and in whole_host mode the
+        # terms (so relevance and matched_terms) are the host's own tags and labels. A withheld host hides those.
+        host_derived: set[str] = set()
+        if host_sv is None:
+            host_derived = {"distance"}
+            if canal.query_mode_used == QueryMode.WHOLE_HOST:
+                host_derived |= {"relevance", "matched_terms"}
         members: list[dict[str, Any]] = []
         entries: list[dict[str, Any]] = []
         for m in canal.members:
             sv = self._visible_in_canal(user, ctx_subbrains, m.subbrain_id, m.version, m.owner_id)
-            scores = {"relevance": m.relevance, "distance": m.distance, "matched_terms": list(m.matched_terms)}
             if sv is None:
-                members.append({**_withheld(m.subbrain_id, m.version), **scores})
+                # Withheld: ids only, nothing derived from its content, not even scores (NEVER-02).
+                members.append(_withheld(m.subbrain_id, m.version))
                 entries.append(_withheld(m.subbrain_id, m.version))
-            else:
-                members.append(
-                    {"subbrain_id": m.subbrain_id, "version": m.version, "withheld": False,
-                     "owner_display": sv.owner_display, **scores}
-                )
-                entries.append({**_subbrain_view(sv), "withheld": False})
+                continue
+            scores = {k: v for k, v in (("relevance", m.relevance), ("distance", m.distance)) if k not in host_derived}
+            members.append({"subbrain_id": m.subbrain_id, "version": m.version, "withheld": False, **scores})
+            entry = {**_subbrain_view(sv), "withheld": False}
+            if "matched_terms" not in host_derived:
+                # Terms of the host's query / host subbrain: another user's text for members (NEVER-09).
+                entry["matched_terms"] = list(m.matched_terms)
+            entries.append(entry)
         body: dict[str, Any] = {
             "ok": True,
             "canal_id": canal.id,
@@ -722,17 +751,23 @@ class Service:
         return {"ok": True, "deltabrain_id": record.id, "canal_id": canal.id, "stats": record.stats.model_dump(mode="json")}
 
     # -- deltabrains -------------------------------------------------------
+    # Everything below works from store.get_deltabrain_for_viewer only, never from the stored record: its "stats"
+    # are computed over the identities this viewer is shown, so no number, list or error code can tell whether a
+    # masked contributor is one of the plainly shown owners (ORACLE v.4 NEVER-11).
+
     def _deltabrain_get(self, user: User, a: DeltabrainIdArgs) -> dict[str, Any]:
         view = self._store.get_deltabrain_for_viewer(user.id, a.deltabrain_id)
-        record = self._store.get_deltabrain_record(a.deltabrain_id)
-        ratings = self._store.ratings_for(a.deltabrain_id)
+        stats = view["stats"]
+        ratings = _ratings_summary(self._store.ratings_for(a.deltabrain_id), list(stats["emergent_edge_ids"]), user.id)
         return {
             "ok": True,
-            "deltabrain_id": record.id,
-            "canal_id": record.canal_id,
-            "stats": record.stats.model_dump(mode="json"),
-            "ratings": _ratings_summary(ratings, record.stats.emergent_edge_ids, user.id),
-            "untrusted_data": _untrusted(deltabrain=view),
+            "deltabrain_id": view["id"],
+            "canal_id": view["canal_id"],
+            # Numbers only at top level; edge ids are host-written strings (NEVER-09) and live in untrusted_data
+            # (deltabrain.stats, ratings).
+            "stats": _stats_counts(stats),
+            "rating_summary": {k: ratings[k] for k in ("emergent_edge_count", "rated_emergent_edge_count", "quality")},
+            "untrusted_data": _untrusted(deltabrain=view, ratings=ratings),
         }
 
     def _deltabrain_list(self, user: User, a: NoArgs) -> dict[str, Any]:
@@ -747,11 +782,12 @@ class Service:
         return {"ok": True, "deltabrains": summaries, "untrusted_data": _untrusted(queries=queries)}
 
     def _deltabrain_rate(self, user: User, a: DeltabrainRateArgs) -> dict[str, Any]:
-        self._store.get_deltabrain_for_viewer(user.id, a.deltabrain_id)  # participant check (NOT_FOUND)
-        record = self._store.get_deltabrain_record(a.deltabrain_id)
-        if a.edge_id not in {e.id for e in record.submission.edges}:
+        view = self._store.get_deltabrain_for_viewer(user.id, a.deltabrain_id)  # participant check (NOT_FOUND)
+        # Both checks use only what the view already shows this viewer: every edge id is listed in it, and the
+        # emergent set is the viewer's own, so neither error code can re-identify a masked contributor.
+        if a.edge_id not in {e.get("id") for e in view["edges"]}:
             raise _not_found()
-        if a.edge_id not in record.stats.emergent_edge_ids:
+        if a.edge_id not in set(view["stats"]["emergent_edge_ids"]):
             raise _err(
                 ErrorCode.NOT_EMERGENT_EDGE,
                 "창발 엣지에만 라벨을 붙일 수 있습니다 / only emergent edges can be rated",
@@ -763,8 +799,9 @@ class Service:
         return {
             "ok": True,
             "deltabrain_id": a.deltabrain_id,
-            "edge_id": a.edge_id,
             "rating": {"novelty": a.novelty, "validity": a.validity, "usefulness": a.usefulness},
+            # The edge id was chosen by the canal host (NEVER-09).
+            "untrusted_data": _untrusted(edge_id=a.edge_id),
         }
 
     def _match_explain(self, user: User, a: MatchInspectArgs) -> dict[str, Any]:

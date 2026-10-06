@@ -19,6 +19,7 @@ from mcp import types
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from .crypto import API_TOKEN_PREFIX
 from .models import User
 from .service import INTERNAL_CODE, INTERNAL_MESSAGE, Service
 
@@ -41,54 +42,159 @@ INSTRUCTIONS = (
 )
 
 _MASK_KEEP = 6
-_MCP_PATH_TOKEN_RE = re.compile(r"(/mcp/)([^/\s?#\"']+)")
+_ELLIPSIS = "…"
+# Whatever follows /mcp/ (any case, doubled slashes) is the token segment.
+_MCP_PATH_TOKEN_RE = re.compile(r"(/mcp/+)([^/\s?#\"']+)", re.IGNORECASE)
+# Token shape anywhere in a line. No left boundary on purpose: uvicorn logs quote()d paths, so
+# "/%20oc_…" or a missing slash ("/mcpoc_…") puts a letter or digit right before the prefix.
+_TOKEN_SHAPE_RE = re.compile(re.escape(API_TOKEN_PREFIX) + r"[A-Za-z0-9_\-]+")
+# Request targets inside free text: an HTTP request line (h11 error reprs, debug logs) or a URL.
+_REQUEST_LINE_RE = re.compile(r"(?<![A-Za-z])((?:GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|CONNECT|TRACE)\s+)(\S+)")
+_URL_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://[^/\s\"'<>]*)(/[^\s\"'<>]*)")
+_URL_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^/]*")
+_ACCESS_LOGGER = "uvicorn.access"
+_UNMASKABLE = "[opencanal] log record dropped: it could not be checked for tokens"
+DEFAULT_MASKED_LOGGERS = ("uvicorn", "uvicorn.error", _ACCESS_LOGGER, "opencanal", "opencanal.mcp")
 
 
 def mask_token(token: Optional[str]) -> str:
     """Log-safe form of a token: first 6 chars + ellipsis. Never log a full token."""
     if not token:
         return "<none>"
-    return token[:_MASK_KEEP] + "…"
+    return token[:_MASK_KEEP] + _ELLIPSIS
+
+
+def _truncate(value: str) -> str:
+    """First 6 chars + ellipsis. Idempotent: an already masked value (6 chars + "…") is unchanged."""
+    return value if len(value) <= _MASK_KEEP else value[:_MASK_KEEP] + _ELLIPSIS
+
+
+def _mask_query(query: str) -> str:
+    parts = []
+    for part in query.split("&"):
+        key, eq, value = part.partition("=")
+        parts.append(key + eq + _truncate(value) if eq else _truncate(part))
+    return "&".join(parts)
+
+
+def mask_request_target(target: str) -> str:
+    """Mask a request path as logged: every segment after the first and every query value keep 6 chars.
+
+    Covers mistyped endpoints such as /mcp//<token>, /x/<token>, /MCP/<token> or ?t=<token>; the
+    first segment (/health, /mcp, /<token>) is left to the /mcp/ and token-shape rules.
+    """
+    path, sep, query = target.partition("?")
+    prefix_match = _URL_PREFIX_RE.match(path)
+    prefix = prefix_match.group(0) if prefix_match else ""
+    segments = path[len(prefix):].split("/")
+    # "/a/b".split("/") == ["", "a", "b"]: index 1 is the first segment of an absolute path.
+    first = 1 if segments[0] == "" else 0
+    masked = "/".join(seg if i <= first else _truncate(seg) for i, seg in enumerate(segments))
+    return prefix + masked + (sep + _mask_query(query) if sep else "")
 
 
 def mask_tokens_in_text(text: str) -> str:
-    """Mask every /mcp/<token> path segment in free text (access logs, error messages)."""
-    return _MCP_PATH_TOKEN_RE.sub(lambda m: m.group(1) + mask_token(m.group(2)), text)
+    """Mask tokens in free text (access logs, error messages, tracebacks).
+
+    Request targets (request lines, URLs) are masked per segment; then any /mcp/<segment> and any
+    token-shaped value (oc_…) anywhere in the text keep only their first 6 chars.
+    """
+    text = _REQUEST_LINE_RE.sub(lambda m: m.group(1) + mask_request_target(m.group(2)), text)
+    text = _URL_RE.sub(lambda m: m.group(1) + mask_request_target(m.group(2)), text)
+    text = _MCP_PATH_TOKEN_RE.sub(lambda m: m.group(1) + _truncate(m.group(2)), text)
+    return _TOKEN_SHAPE_RE.sub(lambda m: _truncate(m.group(0)), text)
 
 
-def _mask_value(value: Any) -> Any:
-    return mask_tokens_in_text(value) if isinstance(value, str) else value
+def _mask_arg(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    if value.startswith("/"):  # uvicorn access log: the request path (with query string)
+        value = mask_request_target(value)
+    return mask_tokens_in_text(value)
+
+
+def _mask_record(record: logging.LogRecord) -> None:
+    if record.name == _ACCESS_LOGGER:
+        # uvicorn's AccessFormatter unpacks record.args as a 5-tuple
+        # (client, method, path, http_version, status): mask item by item and keep the shape.
+        record.msg = mask_tokens_in_text(str(record.msg))
+        if isinstance(record.args, tuple):
+            record.args = tuple(_mask_arg(item) for item in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: _mask_arg(item) for key, item in record.args.items()}
+    else:
+        _mask_rendered_message(record)
+    if record.exc_info and record.exc_info[0] is not None:
+        text = record.exc_text or logging.Formatter().formatException(record.exc_info)
+        masked = mask_tokens_in_text(text)
+        if masked != text:
+            # Formatters print exc_text as is; dropping exc_info keeps them from re-rendering it unmasked.
+            record.exc_text, record.exc_info = masked, None
+    elif record.exc_text:
+        record.exc_text = mask_tokens_in_text(record.exc_text)
+    if record.stack_info:
+        record.stack_info = mask_tokens_in_text(record.stack_info)
+
+
+def _mask_rendered_message(record: logging.LogRecord) -> None:
+    """Mask the rendered message, so tokens inside non-string args (bytes, URLs, dicts) are caught too.
+
+    A record without anything to mask is left exactly as it was (msg, args), for other handlers.
+    """
+    rendered = record.getMessage()
+    masked = mask_tokens_in_text(rendered)
+    color: Optional[str] = None
+    if "color_message" in record.__dict__:  # uvicorn's coloured variant, formatted with the same args
+        try:
+            template = str(record.__dict__["color_message"])
+            color = template % record.args if record.args else template
+        except Exception:
+            del record.__dict__["color_message"]  # formatters fall back to the plain message
+    if masked == rendered and (color is None or mask_tokens_in_text(color) == color):
+        return
+    record.msg, record.args = masked, None
+    if color is not None:
+        record.__dict__["color_message"] = mask_tokens_in_text(color)
 
 
 class TokenMaskFilter(logging.Filter):
-    """Rewrites log records so that /mcp/<token> URLs never reach a handler in full.
+    """Rewrites log records so that no full MCP token reaches a handler (message, args, traceback).
 
-    Masks inside `msg` and each `args` item but keeps their shape: uvicorn's AccessFormatter
-    unpacks record.args as a 5-tuple (client, method, path, http_version, status).
+    Fails closed: a record that cannot be masked is replaced by a fixed notice, never passed through.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = _mask_value(record.msg)
-        if isinstance(record.args, tuple):
-            record.args = tuple(_mask_value(item) for item in record.args)
-        elif isinstance(record.args, dict):
-            record.args = {key: _mask_value(item) for key, item in record.args.items()}
+        try:
+            _mask_record(record)
+        except Exception:
+            record.msg, record.args = _UNMASKABLE, None
+            record.exc_info = record.exc_text = record.stack_info = None
+            record.__dict__.pop("color_message", None)
         return True
 
 
 _TOKEN_FILTER = TokenMaskFilter()
 
 
+def _add_token_filter(target: logging.Logger | logging.Handler) -> None:
+    if _TOKEN_FILTER not in target.filters:
+        target.addFilter(_TOKEN_FILTER)
+
+
 def install_token_log_filter(*logger_names: str) -> None:
-    """Attach the token mask to the given loggers (default: uvicorn's) and their handlers. Idempotent."""
-    names = logger_names or ("uvicorn.access", "uvicorn.error", "uvicorn")
-    for name in names:
-        target = logging.getLogger(name)
-        if _TOKEN_FILTER not in target.filters:
-            target.addFilter(_TOKEN_FILTER)
+    """Attach the token mask to loggers, their handlers, the root handlers and logging.lastResort.
+
+    Logger filters only see records logged on that exact logger, so records from other loggers
+    (mcp.*, starlette, asyncio) are masked by the handler filters they propagate to. Idempotent;
+    call it again after anything (uvicorn's dictConfig) replaces handlers.
+    """
+    loggers = [logging.getLogger(name) for name in (logger_names or DEFAULT_MASKED_LOGGERS)]
+    for target in [*loggers, logging.getLogger()]:
+        _add_token_filter(target)
         for handler in target.handlers:
-            if _TOKEN_FILTER not in handler.filters:
-                handler.addFilter(_TOKEN_FILTER)
+            _add_token_filter(handler)
+    if logging.lastResort is not None:
+        _add_token_filter(logging.lastResort)
 
 
 def _clean_token(value: Any) -> Optional[str]:

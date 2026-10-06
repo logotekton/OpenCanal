@@ -23,9 +23,9 @@ def create_app(service: Service) -> Any:
     Builds a fresh FastMCP per app: the SDK's session manager can be run only once per instance,
     and it must run inside this app's lifespan because Starlette does not run a mounted app's lifespan.
     """
-    install_token_log_filter()  # logger-level filters survive uvicorn's later dictConfig
-    mcp = build_mcp(service)
+    mcp = build_mcp(service)  # FastMCP may add a root log handler here
     mcp_app = mcp.streamable_http_app()  # creates mcp.session_manager
+    install_token_log_filter()  # logger-level filters survive uvicorn's later dictConfig
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

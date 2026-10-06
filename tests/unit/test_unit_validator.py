@@ -469,6 +469,92 @@ def test_emergence_that_skips_the_host():
     assert result.stats.host_touching_emergent_edge_ids == []
 
 
+# Phrasings of the v.2 definition, where refs written on the edge counted toward emergence / host-touching.
+V2_EDGE_REF_PHRASES = (
+    "엣지의 출처", "∪", "plus the edge", "edge's own refs", "edge's refs", "in its provenance", "effective provenance",
+)
+
+
+def _single_owner_payload():
+    return {
+        "nodes": [
+            node("q", "query", "현장 조립 오류"),
+            node("sa1", "source", "현장 조립 오류", A1),
+            node("sa3", "source", "공차 관리", A3),
+        ],
+        "edges": [edge("e0", "q", "sa1"), edge("e1", "sa1", "sa3", "applies_to", R1)],
+    }
+
+
+def _host_skipping_payload():
+    return {
+        "nodes": [
+            node("q", "query", "현장 조립 오류"),
+            node("sb1", "source", "잘못 놓을 수 없는 블록 모양", B1),
+            node("sc1", "source", "형태 상보성", C1),
+        ],
+        "edges": [edge("e0", "q", "sb1"), edge("e1", "sb1", "sc1", "analogous_to", R2)],
+    }
+
+
+@pytest.mark.parametrize(
+    "payload,code",
+    [(_single_owner_payload(), ViolationCode.NO_EMERGENCE), (_host_skipping_payload(), ViolationCode.HOST_NOT_TOUCHED)],
+)
+def test_emergence_messages_never_claim_edge_refs_count(payload, code):
+    # Oracle v.3 §4: only the two end nodes' refs decide emergence and host-touching; edge refs are evidence.
+    (violation,) = by_code(run(payload), code)
+    ko, en = violation.message.split(" / ", 1)
+    for phrase in V2_EDGE_REF_PHRASES:
+        assert phrase not in violation.message, phrase
+    assert "양 끝 노드" in ko and "end node" in en.lower()
+    assert "엣지에 직접 적은" in ko and "on the edge itself" in en
+    assert "new 노드" in ko and "new node" in en  # names an action that can actually fix it
+
+
+def test_edge_refs_suggested_by_v2_wording_do_not_clear_the_violation():
+    # What the old message told the synthesizer to do: cite other owners on the edge itself. Still rejected.
+    no_emergence = _single_owner_payload()
+    find(no_emergence, "edges", "e1")["provenance"] = [B1, C1]
+    assert codes(run(no_emergence)) == [ViolationCode.NO_EMERGENCE]
+    host_skipping = _host_skipping_payload()
+    find(host_skipping, "edges", "e1")["provenance"] = [A1]
+    assert codes(run(host_skipping)) == [ViolationCode.HOST_NOT_TOUCHED]
+
+
+def test_following_the_emergence_message_clears_it():
+    # "connect a new node that cites nodes of both owners (host + member)" fixes both violations.
+    for payload in (_single_owner_payload(), _host_skipping_payload()):
+        payload["nodes"].append(node("n_fix", "new", "모양으로 강제되는 접합부 키잉", A2, B1))
+        payload["edges"].append(edge("e_fix", "n_fix", payload["edges"][0]["target"], "applies_to", R3))
+        result = run(payload)
+        assert result.ok, result.violations
+        assert "e_fix" in result.stats.host_touching_emergent_edge_ids
+
+
+def test_copied_input_edge_message_covers_non_emergent_edges():
+    payload = {
+        "nodes": [
+            node("q", "query", "현장 조립 오류"),
+            node("sa1", "source", "현장 조립 오류", A1),
+            node("sa2", "source", "접합부 상세", A2),
+        ],
+        "edges": [edge("e0", "q", "sa1"), edge("e1", "sa2", "sa1", "applies_to", R1)],
+    }
+    (violation,) = by_code(run(payload), ViolationCode.NOT_NOVEL)
+    ko, en = violation.message.split(" / ", 1)
+    assert "창발 여부와 무관" in ko and "emergent or not" in en
+    assert "방향 무관" in ko and "either direction" in en
+
+
+def test_rationale_message_states_invisible_characters_count_as_spaces():
+    payload = fresh()
+    find(payload, "edges", "e1")["rationale"] = "짧다" + "ㅤ" * 60  # Hangul fillers are not content
+    (violation,) = by_code(run(payload), ViolationCode.RATIONALE_MISSING)
+    ko, en = violation.message.split(" / ", 1)
+    assert "보이지 않는 문자" in ko and "invisible characters" in en
+
+
 # ---------------------------------------------------------------------------
 # RATIONALE_MISSING
 # ---------------------------------------------------------------------------
@@ -605,6 +691,88 @@ def test_templated_ratio_above_limit_fails():
     result = run(_fan(rationales))
     assert codes(result) == [ViolationCode.TEMPLATED_RATIONALE]
     assert "e8" in result.violations[0].message and "e1'" not in result.violations[0].message
+
+
+def _mad_libs(k):
+    """One template with the edge's own endpoint labels filled in (sa1 = "현장 조립 오류", n_k = "교정 기제 변형 k")."""
+    return (
+        f"{_fan_label(k)}의 원리를 현장 조립 오류에 적용하면 현장 조립 오류 문제를 줄이는 데 도움이 되므로 "
+        f"두 개념은 서로 밀접하게 연결된다고 볼 수 있다."
+    )
+
+
+def _fan_label(k):
+    return f"교정 기제 변형 {k}"
+
+
+def test_templated_label_swapped_template_is_the_same_sentence():
+    # ORACLE v.4 MUST-Q7: endpoint labels are replaced by one placeholder before the exact comparison.
+    rationales = [_mad_libs(k) for k in range(5)]
+    assert len({r for r in rationales}) == 5  # all different before substitution
+    result = run(_fan(rationales))
+    templ = by_code(result, ViolationCode.TEMPLATED_RATIONALE)
+    assert codes(result) == [ViolationCode.TEMPLATED_RATIONALE]
+    for edge_id in ("e1", "e2", "e3", "e4", "e5"):
+        assert repr(edge_id) in templ[0].message
+    # Labels are other users' text and must not be echoed (only ids the submitter wrote).
+    assert "교정 기제" not in templ[0].message and "현장 조립" not in templ[0].message
+
+
+def test_templated_label_swap_respects_the_twenty_percent_limit():
+    at_limit = [_unique(k) for k in range(8)] + [_mad_libs(8), _mad_libs(9)]  # 2 of 10 = 20%
+    assert run(_fan(at_limit)).ok
+    over = [_unique(k) for k in range(7)] + [_mad_libs(7), _mad_libs(8), _mad_libs(9)]  # 3 of 10
+    result = run(_fan(over))
+    assert codes(result) == [ViolationCode.TEMPLATED_RATIONALE]
+    assert "e8" in result.violations[0].message and "e10" in result.violations[0].message
+
+
+def test_templated_rationales_that_differ_beyond_the_labels_are_distinct():
+    rationales = [
+        f"{_fan_label(k)}의 원리를 현장 조립 오류에 적용하면 {tail}"
+        for k, tail in enumerate([
+            "조립 단계마다 형상 검사를 넣어 잘못 놓인 유닛을 바로 빼낼 수 있다.",
+            "결합 에너지가 낮은 접합만 풀리게 해 틀린 위치를 고정 전에 드러낸다.",
+            "운송 중 생긴 치수 오차를 키의 여유 안에서 흡수하는 방법이 보인다.",
+        ])
+    ]
+    assert run(_fan(rationales)).ok
+
+
+def test_templated_longest_endpoint_label_is_replaced_first():
+    # n_k's label contains sa1's label: replacing the shorter one first would leave "방지 장치 k" behind.
+    payload = _fan([f"현장 조립 오류 방지 장치 {k}는 현장 조립 오류를 설치 순간에 드러내는 장치로 쓰일 수 있다고 본다." for k in "가나다"])
+    for k, suffix in enumerate("가나다"):
+        find(payload, "nodes", f"n{k}")["label"] = f"현장 조립 오류 방지 장치 {suffix}"
+    result = run(payload)
+    assert codes(result) == [ViolationCode.TEMPLATED_RATIONALE]
+
+
+def test_templated_exact_copy_still_counts_when_only_one_edge_names_its_endpoint():
+    # The same text names n7's label, so n7's skeleton differs from n8/n9's; it is still the same rationale.
+    shared = f"{_fan_label(7)}처럼 결합 에너지가 낮은 접합을 먼저 풀어 틀린 위치의 유닛을 고정 전에 빼내는 절차가 필요하다."
+    result = run(_fan([_unique(k) for k in range(7)] + [shared] * 3))  # 3 of 10 = 30%
+    assert codes(result) == [ViolationCode.TEMPLATED_RATIONALE]
+    for edge_id in ("e8", "e9", "e10"):
+        assert repr(edge_id) in result.violations[0].message
+
+
+def test_label_skeleton_skips_empty_labels_and_uses_a_placeholder_normalization_cannot_produce():
+    from opencanal.textnorm import normalize
+    from opencanal.validator import _LABEL_PLACEHOLDER, _label_skeleton
+
+    assert normalize(_LABEL_PLACEHOLDER) == ""  # never collides with normalized text or labels
+    assert _label_skeleton("형태 상보성의 원리", ["", "형태 상보성"]) == f"{_LABEL_PLACEHOLDER}의 원리"
+    assert _label_skeleton("abc", ["", ""]) == "abc"
+    # Same placeholder for both endpoints, and a shorter label never splits a longer one.
+    assert _label_skeleton("ab abc", ["ab", "abc"]) == f"{_LABEL_PLACEHOLDER} {_LABEL_PLACEHOLDER}"
+
+
+def test_templated_punctuation_only_endpoint_label_does_not_break_the_check():
+    payload = _fan([_unique(k) for k in range(3)])
+    find(payload, "nodes", "n0")["label"] = "!!!"
+    result = run(payload)
+    assert codes(result) == [ViolationCode.GENERIC_LABEL]
 
 
 # ---------------------------------------------------------------------------

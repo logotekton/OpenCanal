@@ -6,10 +6,14 @@ OpenCanalError(NOT_FOUND) with the same message (no existence leak).
 
 There are no delete methods for user data (NEVER-03, D-005): subbrains only switch between
 public and private, and every version / canal / deltabrain row is kept.
+
+Every write runs in one BEGIN IMMEDIATE transaction (`_write_txn`), so a count-then-write such as the
+monthly canal limit or the public subbrain limit is atomic across processes sharing the DB file (TIER-1).
 """
 
 from __future__ import annotations
 
+import errno
 import hmac
 import json
 import os
@@ -18,7 +22,8 @@ import secrets
 import sqlite3
 import tempfile
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -33,6 +38,7 @@ from .models import (
     DeltabrainSubmission,
     EdgeRating,
     ErrorCode,
+    NodeKind,
     OpenCanalError,
     QueryMode,
     SubbrainDocument,
@@ -44,8 +50,15 @@ from .models import (
 )
 
 MASKED_DISPLAY = "비공개 기여자"
+MONTHLY_CANAL_LIMIT_MESSAGE = "이번 달 커널 수 한도를 넘습니다 / monthly canal limit reached"
+PUBLIC_SUBBRAIN_LIMIT_MESSAGE = "공개 서브브레인 수 한도를 넘습니다 / public subbrain limit reached"
 _SQLITE_MAGIC = b"SQLite format 3\x00"
+# Files SQLite treats as part of the database at <db>: a stale one is replayed into a restored image (CRY-1).
+_SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+
+# How one owner is counted for one viewer: ("plain", owner_id) or ("masked", owner_token) (NEVER-11).
+_IdentityKey = tuple[str, str]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -152,6 +165,65 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
+def _viewer_stats(
+    submission: DeltabrainSubmission,
+    stored: DeltabrainStats,
+    host: tuple[str, int],
+    keys: Mapping[str, Optional[_IdentityKey]],
+) -> DeltabrainStats:
+    """Deltabrain stats over the identities one viewer is shown (ORACLE v.4 NEVER-11).
+
+    `keys` maps each cited subbrain_id to the key its owner is shown under (None: no such subbrain). A masked
+    owner is never merged with a plainly shown one, so the result is the same whether the masked contributor is
+    or is not one of the visible owners. Same rules as validator._stats (§4): owners of the endpoint nodes'
+    refs decide emergence (query nodes exempt), owners_involved also counts edge refs. A ref to the host counts
+    as host-touching only when the viewer sees it plainly: a masked ref must not reveal that it is the host.
+    The stored (true) stats are returned unchanged when nothing is masked for this viewer.
+    """
+    if all(key is not None and key[0] == "plain" for key in keys.values()):
+        return stored
+    node_refs = {
+        node.id: [] if node.kind == NodeKind.QUERY else [r for r in node.provenance if keys.get(r.subbrain_id)]
+        for node in submission.nodes
+    }
+    owners = {keys[r.subbrain_id] for refs in node_refs.values() for r in refs}
+    owners |= {keys[r.subbrain_id] for e in submission.edges for r in e.provenance if keys.get(r.subbrain_id)}
+    emergent: list[str] = []
+    host_touching: list[str] = []
+    for edge in submission.edges:
+        refs = [*node_refs.get(edge.source, ()), *node_refs.get(edge.target, ())]
+        if len({keys[r.subbrain_id] for r in refs}) < 2:
+            continue
+        emergent.append(edge.id)
+        if any((r.subbrain_id, r.version) == host and keys[r.subbrain_id][0] == "plain" for r in refs):
+            host_touching.append(edge.id)
+    return stored.model_copy(
+        update={
+            "emergent_edge_ids": emergent,
+            "host_touching_emergent_edge_ids": host_touching,
+            "owners_involved": len(owners),
+        }
+    )
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Persist a directory entry (best effort: not every platform can fsync a directory)."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _exists_error(path: Path) -> FileExistsError:
+    return FileExistsError(errno.EEXIST, "refusing to restore over an existing database file", str(path))
+
+
 class Store:
     def __init__(self, db_path: Path | str, *, master_key: bytes) -> None:
         """Open/create the SQLite DB (":memory:" allowed) and create tables if missing."""
@@ -188,6 +260,24 @@ class Store:
 
     def _all(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
         return self._conn.execute(sql, tuple(params)).fetchall()
+
+    @contextmanager
+    def _write_txn(self) -> Iterator[None]:
+        """One write transaction that holds SQLite's write lock from its first statement.
+
+        Store._lock only serializes this process. BEGIN IMMEDIATE makes every other connection to the same
+        file wait (sqlite3 busy timeout) until we commit, so the reads inside (limit counts, next version)
+        still hold when the write lands. An explicit BEGIN is required: legacy-mode sqlite3 would only open
+        its implicit transaction at the first INSERT/UPDATE, after the count.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self._conn.rollback()
+                raise
+            self._conn.commit()
 
     def _audit_row(self, actor: str, action: str, target: str, detail: Optional[dict[str, Any]]) -> None:
         self._conn.execute(
@@ -296,7 +386,7 @@ class Store:
         """Create a user and return (user, plaintext_token). Only the token hash is stored."""
         uid = user_id or _new_id("u_")
         tier = Tier(tier)
-        with self._lock, self._conn:
+        with self._write_txn():
             if self._one("SELECT 1 FROM users WHERE id = ?", (uid,)) is not None:
                 raise OpenCanalError(ErrorCode.INVALID_ARGUMENT, "user already exists")
             self._conn.execute(
@@ -322,7 +412,7 @@ class Store:
 
     def rotate_token(self, user_id: str) -> str:
         """Revoke all existing tokens of the user and return a new plaintext token."""
-        with self._lock, self._conn:
+        with self._write_txn():
             if self._one("SELECT 1 FROM users WHERE id = ?", (user_id,)) is None:
                 raise _not_found()
             self._conn.execute(
@@ -335,7 +425,7 @@ class Store:
 
     def set_tier(self, user_id: str, tier: Tier) -> User:
         tier = Tier(tier)
-        with self._lock, self._conn:
+        with self._write_txn():
             row = self._one("SELECT * FROM users WHERE id = ?", (user_id,))
             if row is None:
                 raise _not_found()
@@ -355,7 +445,7 @@ class Store:
         """New subbrain (private) when subbrain_id is None; else a new version of the owner's subbrain
         (visibility and published_version unchanged). NOT_FOUND if subbrain_id is not the owner's."""
         now = self._now()
-        with self._lock, self._conn:
+        with self._write_txn():
             if self._one("SELECT 1 FROM users WHERE id = ?", (owner_id,)) is None:
                 raise _not_found()
             if subbrain_id is None:
@@ -397,16 +487,27 @@ class Store:
         *,
         version: Optional[int] = None,
         confirm_hash: Optional[str] = None,
+        max_public: Optional[int] = None,
     ) -> SubbrainSummary:
         """PUBLIC requires confirm_hash == content_hash of `version` (default latest) else CONFIRMATION_MISMATCH;
-        sets published_version = version. PRIVATE keeps published_version (data retained). Audit-logged."""
+        sets published_version = version. PRIVATE keeps published_version (data retained). Audit-logged.
+
+        max_public (MUST-T1): when a private subbrain goes public and the owner already has max_public public
+        subbrains, LIMIT_EXCEEDED. Counted in the same write transaction as the update (atomic across processes);
+        re-publishing an already public subbrain is not counted."""
         visibility = Visibility(visibility)
-        with self._lock, self._conn:
+        with self._write_txn():
             sb = self._subbrain_row(subbrain_id)
             if sb is None or sb["owner_id"] != owner_id:
                 raise _not_found()
             now = self._now()
             if visibility == Visibility.PUBLIC:
+                if max_public is not None and sb["visibility"] != Visibility.PUBLIC.value:
+                    current = self._count_public(owner_id)
+                    if current >= max_public:
+                        raise OpenCanalError(
+                            ErrorCode.LIMIT_EXCEEDED, PUBLIC_SUBBRAIN_LIMIT_MESSAGE, limit=max_public, current=current
+                        )
                 target = version if version is not None else self._latest_version(subbrain_id)
                 row = self._one(
                     "SELECT content_hash FROM subbrain_versions WHERE subbrain_id = ? AND version = ?",
@@ -436,13 +537,16 @@ class Store:
             self._audit_row(owner_id, "subbrain.visibility", subbrain_id, detail)
             return self._summary(self._subbrain_row(subbrain_id))
 
+    def _count_public(self, owner_id: str) -> int:
+        row = self._one(
+            "SELECT COUNT(*) AS n FROM subbrains WHERE owner_id = ? AND visibility = ?",
+            (owner_id, Visibility.PUBLIC.value),
+        )
+        return int(row["n"])
+
     def count_public_subbrains(self, owner_id: str) -> int:
         with self._lock:
-            row = self._one(
-                "SELECT COUNT(*) AS n FROM subbrains WHERE owner_id = ? AND visibility = ?",
-                (owner_id, Visibility.PUBLIC.value),
-            )
-        return int(row["n"])
+            return self._count_public(owner_id)
 
     def list_subbrains_for_owner(self, owner_id: str) -> list[SubbrainSummary]:
         """Owner sees all of their subbrains, public and private."""
@@ -500,10 +604,15 @@ class Store:
         query: str,
         query_mode_used: QueryMode,
         members: list[CanalMember],
+        *,
+        canals_per_month: Optional[int] = None,
     ) -> Canal:
+        """canals_per_month (MUST-T1): LIMIT_EXCEEDED when the host already created that many canals in the
+        UTC month of this canal's created_at. Counted in the same write transaction as the insert, so processes
+        sharing the DB cannot both pass the check (TIER-1)."""
         canal_id = _new_id("cn_")
         mode = QueryMode(query_mode_used)
-        with self._lock, self._conn:
+        with self._write_txn():
             host = self._one("SELECT owner_id FROM subbrains WHERE id = ?", (host_subbrain_id,))
             if host is None or host["owner_id"] != host_user_id:
                 raise _not_found()
@@ -513,10 +622,22 @@ class Store:
                     "SELECT 1 FROM subbrain_versions WHERE subbrain_id = ? AND version = ?", (sid, ver)
                 ) is None:
                     raise _not_found()
+            now = self._now()
+            if canals_per_month is not None:
+                month = now[:7]
+                used = self._count_canals(host_user_id, month)
+                if used >= canals_per_month:
+                    raise OpenCanalError(
+                        ErrorCode.LIMIT_EXCEEDED,
+                        MONTHLY_CANAL_LIMIT_MESSAGE,
+                        limit=canals_per_month,
+                        current=used,
+                        month=month,
+                    )
             self._conn.execute(
                 "INSERT INTO canals (id, host_user_id, host_subbrain_id, host_version, query, query_mode_used, "
                 "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (canal_id, host_user_id, host_subbrain_id, host_version, query, mode.value, self._now()),
+                (canal_id, host_user_id, host_subbrain_id, host_version, query, mode.value, now),
             )
             for m in members:
                 # owner_id is stored as of canal creation: the participant set never shrinks (NEVER-02).
@@ -589,10 +710,13 @@ class Store:
         if not _MONTH_RE.match(month or ""):
             raise ValueError("month must be YYYY-MM")
         with self._lock:
-            row = self._one(
-                "SELECT COUNT(*) AS n FROM canals WHERE host_user_id = ? AND substr(created_at, 1, 7) = ?",
-                (user_id, month),
-            )
+            return self._count_canals(user_id, month)
+
+    def _count_canals(self, user_id: str, month: str) -> int:
+        row = self._one(
+            "SELECT COUNT(*) AS n FROM canals WHERE host_user_id = ? AND substr(created_at, 1, 7) = ?",
+            (user_id, month),
+        )
         return int(row["n"])
 
     # -- deltabrains ------------------------------------------------------
@@ -600,7 +724,7 @@ class Store:
         self, canal_id: str, submitted_by: str, submission: DeltabrainSubmission, stats: DeltabrainStats
     ) -> DeltabrainRecord:
         deltabrain_id = _new_id("db_")
-        with self._lock, self._conn:
+        with self._write_txn():
             if self._one("SELECT 1 FROM canals WHERE id = ?", (canal_id,)) is None:
                 raise _not_found()
             self._conn.execute(
@@ -619,52 +743,64 @@ class Store:
             row = self._one("SELECT * FROM deltabrains WHERE id = ?", (deltabrain_id,))
         return self._record(row)
 
+    def _viewer_identities(
+        self, viewer_id: str, deltabrain_id: str, submission: DeltabrainSubmission
+    ) -> dict[str, tuple[dict[str, Any], Optional[_IdentityKey]]]:
+        """Owner of every subbrain the submission cites, as shown to viewer_id (NEVER-11), with the key that
+        owner is counted under for this viewer (None: no such subbrain). Plain when the subbrain is public or the
+        viewer owns it; else "비공개 기여자" + the per-deltabrain contributor token. Caller holds self._lock."""
+        cited = {ref.subbrain_id for item in (*submission.nodes, *submission.edges) for ref in item.provenance}
+        tokens: dict[str, str] = {}
+        out: dict[str, tuple[dict[str, Any], Optional[_IdentityKey]]] = {}
+        for sid in sorted(cited):
+            sb = self._subbrain_row(sid)
+            if sb is not None and (sb["visibility"] == Visibility.PUBLIC.value or sb["owner_id"] == viewer_id):
+                ident: dict[str, Any] = {"owner_id": sb["owner_id"], "owner_display": sb["owner_display"]}
+                out[sid] = (ident, ("plain", sb["owner_id"]))
+                continue
+            token = None
+            if sb is not None:
+                owner_id = sb["owner_id"]
+                if owner_id not in tokens:
+                    tokens[owner_id] = crypto.contributor_token(self._master_key, owner_id, deltabrain_id)
+                token = tokens[owner_id]
+            ident = {"owner_id": None, "owner_display": MASKED_DISPLAY, "owner_token": token}
+            out[sid] = (ident, ("masked", token) if token is not None else None)
+        return out
+
+    @staticmethod
+    def _keys(idents: Mapping[str, tuple[dict[str, Any], Optional[_IdentityKey]]]) -> dict[str, Optional[_IdentityKey]]:
+        return {sid: key for sid, (_, key) in idents.items()}
+
     def get_deltabrain_for_viewer(self, viewer_id: str, deltabrain_id: str) -> dict[str, Any]:
         """Participants only. Returns a JSON-ready view in which every provenance ref carries
         owner info: {"owner_id", "owner_display"} when the cited subbrain is public or the viewer is
         its owner, else {"owner_id": None, "owner_display": "비공개 기여자",
         "owner_token": crypto.contributor_token(master_key, owner_id, deltabrain_id)} (NEVER-11).
-        Retained content (labels/summaries) stays visible to participants (NEVER-02)."""
+        Retained content (labels/summaries) stays visible to participants (NEVER-02).
+
+        "stats" is computed over the identities shown to this viewer (ORACLE v.4 NEVER-11, `_viewer_stats`):
+        emergent edges, host-touching edges and owners_involved never reveal whether a masked contributor is
+        one of the plainly shown owners. The stored record keeps the true stats."""
         with self._lock:
             row = self._one("SELECT * FROM deltabrains WHERE id = ?", (deltabrain_id,))
             canal = self._canal(row["canal_id"]) if row is not None else None
             if row is None or canal is None or viewer_id not in canal.participant_ids:
                 raise _not_found()
             record = self._record(row)
-            cited = {ref.subbrain_id for n in record.submission.nodes for ref in n.provenance}
-            cited |= {ref.subbrain_id for e in record.submission.edges for ref in e.provenance}
-            owners: dict[str, sqlite3.Row] = {}
-            for sid in sorted(cited):
-                sb = self._subbrain_row(sid)
-                if sb is not None:
-                    owners[sid] = sb
-
-        tokens: dict[str, str] = {}
-        contributors: dict[tuple[Any, ...], dict[str, Any]] = {}
-
-        def identity(sid: str) -> dict[str, Any]:
-            sb = owners.get(sid)
-            if sb is not None and (sb["visibility"] == Visibility.PUBLIC.value or sb["owner_id"] == viewer_id):
-                ident: dict[str, Any] = {"owner_id": sb["owner_id"], "owner_display": sb["owner_display"]}
-                key: tuple[Any, ...] = ("plain", sb["owner_id"])
-            else:
-                token = None
-                if sb is not None:
-                    owner_id = sb["owner_id"]
-                    if owner_id not in tokens:
-                        tokens[owner_id] = crypto.contributor_token(self._master_key, owner_id, deltabrain_id)
-                    token = tokens[owner_id]
-                ident = {"owner_id": None, "owner_display": MASKED_DISPLAY, "owner_token": token}
-                key = ("masked", token)
-            # One contributor entry per displayed identity, so a masked owner never collapses into a
-            # plainly listed one (that would let viewers infer who the masked contributor is).
-            contributors.setdefault(key, dict(ident))
-            return ident
+            idents = self._viewer_identities(viewer_id, deltabrain_id, record.submission)
+        stats = _viewer_stats(
+            record.submission, record.stats, (canal.host_subbrain_id, canal.host_version), self._keys(idents)
+        )
+        contributors: dict[_IdentityKey | tuple[str, None], dict[str, Any]] = {}
 
         def annotate(refs: list[Any]) -> list[dict[str, Any]]:
             out = []
             for ref in refs:
-                ident = identity(ref.subbrain_id)
+                ident, key = idents[ref.subbrain_id]
+                # One contributor entry per displayed identity, so a masked owner never collapses into a
+                # plainly listed one (that would let viewers infer who the masked contributor is).
+                contributors.setdefault(key or ("masked", None), dict(ident))
                 if ident["owner_id"] is None:
                     out.append({"subbrain_id": None, "version": None, "node_id": None, **ident})
                 else:
@@ -690,40 +826,49 @@ class Store:
             "host_subbrain_id": canal.host_subbrain_id,
             "created_at": record.created_at,
             "synthesizer": record.submission.synthesizer.model_dump(mode="json"),
-            "stats": record.stats.model_dump(mode="json"),
+            "stats": stats.model_dump(mode="json"),
             "nodes": nodes,
             "edges": edges,
             "contributors": list(contributors.values()),
         }
 
     def list_deltabrains_for_viewer(self, viewer_id: str) -> list[dict[str, Any]]:
-        """Summaries of deltabrains of canals the viewer participates in."""
+        """Summaries of deltabrains of canals the viewer participates in. Counts are the viewer's own
+        (same `_viewer_stats` as get_deltabrain_for_viewer, NEVER-11)."""
+        out = []
         with self._lock:
             rows = self._all(
-                "SELECT d.id, d.canal_id, d.stats_json, d.created_at, c.query, c.host_user_id "
+                "SELECT d.id, d.canal_id, d.submission_json, d.stats_json, d.created_at, c.query, c.host_user_id, "
+                "c.host_subbrain_id, c.host_version "
                 "FROM deltabrains d JOIN canals c ON c.id = d.canal_id "
                 "WHERE c.host_user_id = ? OR EXISTS "
                 "(SELECT 1 FROM canal_members m WHERE m.canal_id = c.id AND m.owner_id = ?) "
                 "ORDER BY d.rowid",
                 (viewer_id, viewer_id),
             )
-        out = []
-        for r in rows:
-            stats = DeltabrainStats.model_validate_json(r["stats_json"])
-            out.append(
-                {
-                    "id": r["id"],
-                    "canal_id": r["canal_id"],
-                    "query": r["query"],
-                    "created_at": r["created_at"],
-                    "is_host": r["host_user_id"] == viewer_id,
-                    "stats": {
-                        "node_count": stats.node_count,
-                        "edge_count": stats.edge_count,
-                        "emergent_edge_count": len(stats.emergent_edge_ids),
-                    },
-                }
-            )
+            for r in rows:
+                submission = DeltabrainSubmission.model_validate_json(r["submission_json"])
+                idents = self._viewer_identities(viewer_id, r["id"], submission)
+                stats = _viewer_stats(
+                    submission,
+                    DeltabrainStats.model_validate_json(r["stats_json"]),
+                    (r["host_subbrain_id"], r["host_version"]),
+                    self._keys(idents),
+                )
+                out.append(
+                    {
+                        "id": r["id"],
+                        "canal_id": r["canal_id"],
+                        "query": r["query"],
+                        "created_at": r["created_at"],
+                        "is_host": r["host_user_id"] == viewer_id,
+                        "stats": {
+                            "node_count": stats.node_count,
+                            "edge_count": stats.edge_count,
+                            "emergent_edge_count": len(stats.emergent_edge_ids),
+                        },
+                    }
+                )
         return out
 
     def get_deltabrain_record(self, deltabrain_id: str) -> DeltabrainRecord:
@@ -736,7 +881,7 @@ class Store:
 
     def rate_edge(self, rating: EdgeRating, deltabrain_id: str) -> None:
         """Upsert one rater's labels for one edge. Caller (service) checks participant + emergent edge."""
-        with self._lock, self._conn:
+        with self._write_txn():
             if self._one("SELECT 1 FROM deltabrains WHERE id = ?", (deltabrain_id,)) is None:
                 raise _not_found()
             self._conn.execute(
@@ -764,7 +909,7 @@ class Store:
 
     # -- audit / backup ---------------------------------------------------
     def audit(self, actor: str, action: str, target: str, detail: Optional[dict[str, Any]] = None) -> None:
-        with self._lock, self._conn:
+        with self._write_txn():
             self._audit_row(actor, action, target, detail)
 
     def snapshot_bytes(self) -> bytes:
@@ -783,13 +928,37 @@ class Store:
 
     @staticmethod
     def restore_bytes(db_path: Path | str, data: bytes) -> None:
-        """Write `data` as the DB file at db_path (refuse to overwrite an existing file)."""
+        """Write `data` as a new DB file (mode 0600) at db_path.
+
+        Refuses with FileExistsError naming the file when db_path or any SQLite sidecar of it (<db>-wal, <db>-shm,
+        <db>-journal) exists: SQLite would replay a stale sidecar on top of the restored image and silently
+        bring back post-backup writes or corrupt it (CRY-1). The image goes to a temp file in the same directory,
+        is fsynced, then hard-linked into place (never replaces an existing file), so a crash cannot leave a
+        partial DB at db_path."""
         path = Path(db_path)
-        if path.exists():
-            raise FileExistsError(str(path))
+        for candidate in (path, *(path.with_name(path.name + suffix) for suffix in _SQLITE_SIDECARS)):
+            if os.path.lexists(candidate):
+                raise _exists_error(candidate)
         if not data.startswith(_SQLITE_MAGIC):
             raise ValueError("not a SQLite database image")
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".restoring")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, 0o600)
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                raise _exists_error(path) from None
+            except OSError:
+                # No hard links on this filesystem. rename() is atomic too but replaces, so check again first.
+                if os.path.lexists(path):
+                    raise _exists_error(path) from None
+                os.rename(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        _fsync_dir(path.parent)

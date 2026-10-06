@@ -143,6 +143,7 @@ def test_emails_are_masked(text):
         "02-1234-5678",
         "031-123-4567",
         "(02) 123-4567",
+        "1588-1234",  # 대표번호 (ORACLE v.4 NEVER-04)
     ],
 )
 def test_phones_are_masked(text):
@@ -199,9 +200,9 @@ def test_email_inside_windows_path_is_one_path():
         "10:30",
         "12,000원",
         "0.05 mm",
-        "1588-1234",
         "BIM/CDE",
         "[REDACTED:URL] [REDACTED:PATH] [REDACTED:EMAIL] [REDACTED:PHONE]",
+        "[REDACTED:SECRET] [REDACTED:RRN] password=[REDACTED:SECRET]",
         "redacted-node-3 redacted-edge-0",
     ],
 )
