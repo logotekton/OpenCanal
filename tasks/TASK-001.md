@@ -23,8 +23,8 @@
 
 - **수용 기준 ID:** MUST-Q0~Q9, MUST-M1·M3·M4, PROV-M2(잠정), MUST-T1, MUST-C1·C2, MUST-E1·E2
 - **금지 동작 ID:** NEVER-01~12
-- 정본: `docs/oracle/ORACLE_MANIFEST.md` v2026-10-06.5
-- 변경 이력: CHANGE-001(빌드), CHANGE-002(v.3), CHANGE-003(v.4 적대 검토 수정), CHANGE-004(v.5 오너 결정)
+- 정본: `docs/oracle/ORACLE_MANIFEST.md` v2026-10-06.7
+- 변경 이력: CHANGE-001(빌드), CHANGE-002(v.3), CHANGE-003(v.4 적대 검토 수정), CHANGE-004(v.5 오너 결정), CHANGE-005(v.6 내용 거리), CHANGE-006(v.7 호스트 겹침 거리)
 
 ## 4. 모듈 소유와 계약
 

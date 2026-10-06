@@ -25,7 +25,7 @@ class MatchingConfig(BaseModel):
     field_weights: dict[str, float]
     substring_match_factor: float
     distance_bonus: float = 0.0  # v.5 MUST-M2: score = relevance + distance_bonus * distance
-    distance_saturation: float = 0.25  # v.6 MUST-M5: distance = 1 - min(1, cosine / distance_saturation)
+    distance_saturation: float = 0.25  # MUST-M5 v.7: distance = 1 - min(1, (|H∩C|/|H|) / distance_saturation)
     far_distance: float = 0.5  # v.6 MUST-M2: diversity guarantee threshold
     denominator_cap: int
     josa_suffixes: list[str]
