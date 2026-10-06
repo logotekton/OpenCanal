@@ -216,6 +216,7 @@ class MatchCandidate(BaseModel):
     owner_id: str
     relevance: float  # 0..1, ORACLE MUST-M1
     distance: float  # 0..1 domain distance from host (1 = no shared domain)
+    score: float = 0.0  # v.5 MUST-M2 ranking score (relevance + distance_bonus * distance); 0 for below-tau
     matched_terms: list[str]  # query terms that matched (evidence for MUST-M1)
     selected: bool  # chosen as canal member
     reason: str  # why selected / not selected (e.g. "below_tau", "truncated_by_limit")

@@ -24,6 +24,7 @@ class MatchingConfig(BaseModel):
     strategies_available: list[str]
     field_weights: dict[str, float]
     substring_match_factor: float
+    distance_bonus: float = 0.0  # v.5 MUST-M2: score = relevance + distance_bonus * distance
     denominator_cap: int
     josa_suffixes: list[str]
     josa_min_stem_length: int
