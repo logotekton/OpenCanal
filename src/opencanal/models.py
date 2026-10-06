@@ -55,7 +55,8 @@ class ErrorCode(str, Enum):
     NOT_CANAL_HOST = "NOT_CANAL_HOST"
     NO_RELEVANT_SUBBRAIN = "NO_RELEVANT_SUBBRAIN"
     VALIDATION_FAILED = "VALIDATION_FAILED"
-    NOT_EMERGENT_EDGE = "NOT_EMERGENT_EDGE"
+    NOT_EMERGENT_EDGE = "NOT_EMERGENT_EDGE"  # v.7 and earlier; v.8 uses NOT_RATEABLE
+    NOT_RATEABLE = "NOT_RATEABLE"  # v.8: target is neither a bridge node nor an emergent edge
     NOT_AVAILABLE = "NOT_AVAILABLE"
     INTERNAL = "INTERNAL"  # unexpected server error; never carries internals (ORACLE §9, v.3)
 
@@ -297,7 +298,8 @@ class DeltaNode(BaseModel):
     id: str = Field(min_length=1, max_length=200)
     kind: NodeKind
     label: str = Field(min_length=1, max_length=200)
-    summary: Optional[str] = Field(default=None, max_length=600)
+    summary: Optional[str] = Field(default=None, max_length=600)  # required (40-600 normalized) for bridges, v.8
+    constraints: Optional[str] = Field(default=None, max_length=600)  # v.8 protocol: cost/effort/process trade-offs
     provenance: list[ProvRef] = Field(default_factory=list)
 
 
@@ -340,9 +342,12 @@ class DeltabrainStats(BaseModel):
     node_count: int
     edge_count: int
     new_node_count: int
-    emergent_edge_ids: list[str]
+    emergent_edge_ids: list[str]  # v.8 definition (no query edges, no self-anchor edges)
     host_touching_emergent_edge_ids: list[str]
     owners_involved: int
+    bridge_node_ids: list[str] = Field(default_factory=list)  # v.8: new nodes whose owners >= 2
+    host_bridge_node_ids: list[str] = Field(default_factory=list)  # v.8: bridges citing the host subbrain
+    bridges_with_constraints: int = 0  # v.8: bridges whose `constraints` is non-empty (reported, not enforced)
 
 
 class ValidationResult(BaseModel):
@@ -352,7 +357,9 @@ class ValidationResult(BaseModel):
 
 
 class EdgeRating(BaseModel):
-    edge_id: str
+    """One rater's HUMAN-01 labels for one rating unit (v.8: a bridge node id or an emergent edge id)."""
+
+    edge_id: str  # the rating target id; name kept for storage compatibility
     rater_id: str
     novelty: int = Field(ge=0, le=1)
     validity: int = Field(ge=0, le=1)

@@ -23,7 +23,7 @@
 
 - **수용 기준 ID:** MUST-Q0~Q9, MUST-M1·M3·M4, PROV-M2(잠정), MUST-T1, MUST-C1·C2, MUST-E1·E2
 - **금지 동작 ID:** NEVER-01~12
-- 정본: `docs/oracle/ORACLE_MANIFEST.md` v2026-10-06.7
+- 정본: `docs/oracle/ORACLE_MANIFEST.md` v2026-10-07.8
 - 변경 이력: CHANGE-001(빌드), CHANGE-002(v.3), CHANGE-003(v.4 적대 검토 수정), CHANGE-004(v.5 오너 결정), CHANGE-005(v.6 내용 거리), CHANGE-006(v.7 호스트 겹침 거리)
 
 ## 4. 모듈 소유와 계약
@@ -56,7 +56,7 @@
 | `canal_submit` | `canal_id`, `deltabrain`(obj) | `deltabrain_id`, `stats` | NOT_CANAL_HOST, HOST_NOT_PUBLIC, VALIDATION_FAILED(`violations[]`), NOT_FOUND |
 | `deltabrain_get` | `deltabrain_id` | 최상위 `stats`는 숫자만, `rating_summary`(숫자). `untrusted_data.deltabrain`(store 마스킹 적용), `untrusted_data.stats`(엣지 ID 목록), `untrusted_data.ratings`. 통계는 보는 사람에게 보이는 신원 기준 (NEVER-11 v.4) | NOT_FOUND |
 | `deltabrain_list` | — | `deltabrains[]` 요약 | — |
-| `deltabrain_rate` | `deltabrain_id`, `edge_id`, `novelty`, `validity`, `usefulness` (0/1) | `ok`, `untrusted_data.edge_id` | NOT_FOUND, NOT_EMERGENT_EDGE(보는 사람의 뷰 기준), INVALID_ARGUMENT |
+| `deltabrain_rate` | `deltabrain_id`, `target_id`(다리 노드 또는 창발 엣지, v.8), `novelty`, `validity`, `usefulness` (0/1) | `ok`, `untrusted_data.target_id` | NOT_FOUND, NOT_RATEABLE(보는 사람의 뷰 기준), INVALID_ARGUMENT |
 | `match_explain` (Pro+) | `query`, `host_subbrain_id`, `query_mode?` | MatchResult 전체(τ 미만 포함), 커널 생성·차감 없음 | HOST_NOT_PUBLIC 아님 — 호스트는 내 서브브레인이면 공개 여부 무관, NOT_FOUND |
 | `deltabrain_export` (Pro+) | `deltabrain_id` | `untrusted_data.graph` {nodes, edges} JSON | NOT_FOUND |
 | `canal_synthesize` (Expert) | — | — | 항상 NOT_AVAILABLE |
