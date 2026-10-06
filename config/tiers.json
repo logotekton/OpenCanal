@@ -1,0 +1,22 @@
+{
+  "_comment": "Oracle-owned (ORACLE §5.6, DECISIONS D-004). Builder must not edit. Numbers are provisional.",
+  "tiers": {
+    "free": {
+      "tools": ["subbrain_import", "subbrain_list_mine", "subbrain_get", "subbrain_set_visibility", "subbrain_search",
+                "canal_open", "canal_get", "canal_submit", "deltabrain_get", "deltabrain_list", "deltabrain_rate"],
+      "limits": {"max_members_per_canal": 3, "canals_per_month": 10, "max_public_subbrains": 1}
+    },
+    "pro": {
+      "tools": ["subbrain_import", "subbrain_list_mine", "subbrain_get", "subbrain_set_visibility", "subbrain_search",
+                "canal_open", "canal_get", "canal_submit", "deltabrain_get", "deltabrain_list", "deltabrain_rate",
+                "match_explain", "deltabrain_export"],
+      "limits": {"max_members_per_canal": 6, "canals_per_month": 100, "max_public_subbrains": 10}
+    },
+    "expert": {
+      "tools": ["subbrain_import", "subbrain_list_mine", "subbrain_get", "subbrain_set_visibility", "subbrain_search",
+                "canal_open", "canal_get", "canal_submit", "deltabrain_get", "deltabrain_list", "deltabrain_rate",
+                "match_explain", "deltabrain_export", "canal_synthesize"],
+      "limits": {"max_members_per_canal": 10, "canals_per_month": 1000, "max_public_subbrains": 50}
+    }
+  }
+}

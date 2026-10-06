@@ -10,3 +10,6 @@ __pycache__/
 data/*.db
 node_modules/
 dist/
+data/
+backups/
+*.key

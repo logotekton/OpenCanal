@@ -1,0 +1,19 @@
+{
+  "_comment": "Oracle-owned (docs/oracle/ORACLE_MANIFEST.md §5.4). Builder must not edit. Do not tune tau to make tests pass.",
+  "tau": 0.2,
+  "strategy": "relevance_plus_diversity",
+  "strategies_available": ["relevance_plus_diversity", "relevance_only"],
+  "field_weights": {"tags": 1.0, "label": 0.8, "summary": 0.5},
+  "substring_match_factor": 0.5,
+  "denominator_cap": 5,
+  "josa_suffixes": ["에서는", "으로는", "에게서", "으로", "에서", "에게", "까지", "부터", "처럼", "보다", "이나", "이랑", "하고", "의", "을", "를", "이", "가", "은", "는", "에", "로", "와", "과", "도", "만", "들"],
+  "josa_min_stem_length": 2,
+  "stopwords": [
+    "아이디어", "방법", "방안", "해줘", "해주세요", "줘", "알려줘", "평가", "평가해줘", "분석", "분석해줘",
+    "구상", "구상해줘", "제안", "제안해줘", "정리", "정리해줘", "검토", "검토해줘", "내", "나", "나의", "저", "제",
+    "우리", "두뇌", "브레인", "서브브레인", "좀", "대한", "위한", "관련", "생각", "줄일", "높일", "만들", "어떻게",
+    "무엇", "뭐", "수", "것", "등", "및", "그리고",
+    "the", "a", "an", "of", "for", "to", "and", "or", "in", "on", "my", "me", "please", "idea", "ideas",
+    "evaluate", "brain", "how", "what"
+  ]
+}

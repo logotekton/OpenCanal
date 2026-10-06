@@ -1,7 +1,7 @@
 # START — opencanal (OpenCanAI) · NDSH-R0/1.0
 
 > 기준: OpenCrab 팩 「비개발자를 위한 개발의 정석」(NDSH v1.6.1) — SB-QUERY-001 다섯 문답, 2장 승격 스위치, 부록 A Launch Binder.
-> 작성 2026-10-06. 상태: **초안**. 설계 질문 Q1~Q3은 확정했다 (docs/DECISIONS.md). `[제안]` 표시는 아직 승인받지 않은 기본값이다.
+> 작성 2026-10-06. 상태: **초안**. 설계 질문 Q1~Q5와 Oracle v2026-10-06.2를 확정했다. `[제안]` 표시는 아직 승인받지 않은 기본값이다.
 
 ## 한 문장 문제
 
@@ -57,4 +57,4 @@ NDSH에 따르면 R2의 보호 변경(인증·권한·tenant, 개인정보, 결�
 | 위험 | [docs/risks/RISK-001.md](docs/risks/RISK-001.md) |
 | 결정 | [docs/DECISIONS.md](docs/DECISIONS.md) |
 | 데이터 지도 | [docs/DATA_MAP.md](docs/DATA_MAP.md) |
-| 정답(Oracle) | [docs/oracle/ORACLE_MANIFEST.md](docs/oracle/ORACLE_MANIFEST.md) — 초안, Owner self-test 대기 |
+| 정답(Oracle) | [docs/oracle/ORACLE_MANIFEST.md](docs/oracle/ORACLE_MANIFEST.md) — v2026-10-06.2 고정 |
