@@ -23,7 +23,7 @@
 
 - **수용 기준 ID:** MUST-Q0~Q9, MUST-M1·M3·M4, PROV-M2(잠정), MUST-T1, MUST-C1·C2, MUST-E1·E2
 - **금지 동작 ID:** NEVER-01~12
-- 정본: `docs/oracle/ORACLE_MANIFEST.md` v2026-10-06.2
+- 정본: `docs/oracle/ORACLE_MANIFEST.md` v2026-10-06.4
 
 ## 4. 모듈 소유와 계약
 
@@ -51,7 +51,7 @@
 | `subbrain_set_visibility` | `subbrain_id`, `visibility`("public"\|"private"), `version?`, `confirm_hash?` | SubbrainSummary | CONFIRMATION_MISMATCH, LIMIT_EXCEEDED(공개 수), NOT_FOUND |
 | `subbrain_search` | `query`, `limit?`(≤20) | `untrusted_data.results[]` {subbrain_id, version, title, domains, owner_display, relevance, matched_terms} — 공개만, relevance ≥ τ만 | — |
 | `canal_open` | `query`, `host_subbrain_id`, `query_mode?` | `canal_id`, `query_mode_used`, `members[]`(점수), `truncated`, `protocol`, `untrusted_data{notice, host, subbrains[]}` | HOST_NOT_PUBLIC, NOT_FOUND, NO_RELEVANT_SUBBRAIN(커널 미생성·미차감), LIMIT_EXCEEDED(월 커널) |
-| `canal_get` | `canal_id` | 커널 + 지금 공개인 멤버 내용 (`untrusted_data`). 비공개로 바뀐 멤버는 `withheld:true`, 내용 없음 | NOT_FOUND |
+| `canal_get` | `canal_id` | 커널 + 지금 공개인 호스트·멤버 내용 (`untrusted_data`). 비공개로 바뀐 호스트·멤버는 `withheld:true`, 내용 없음 (주인 본인에게는 보인다) | NOT_FOUND |
 | `canal_submit` | `canal_id`, `deltabrain`(obj) | `deltabrain_id`, `stats` | NOT_CANAL_HOST, HOST_NOT_PUBLIC, VALIDATION_FAILED(`violations[]`), NOT_FOUND |
 | `deltabrain_get` | `deltabrain_id` | `untrusted_data.deltabrain` (store 마스킹 적용), `ratings` 요약 | NOT_FOUND |
 | `deltabrain_list` | — | `deltabrains[]` 요약 | — |

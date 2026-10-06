@@ -11,15 +11,37 @@ import unicodedata
 from collections.abc import Iterable, Sequence
 
 _PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
+# Hangul fillers render as blank but are letters (Lo), so \w keeps them (ORACLE v.4 정규화).
+_HANGUL_FILLERS = frozenset({"\u115f", "\u1160", "\u3164", "\uffa0"})
 _WS_RE = re.compile(r"\s+")
 _HANGUL_RE = re.compile(r"[가-힣]")
 
 
-def normalize(text: str | None) -> str:
-    """ORACLE 정규화: NFKC, lowercase, strip punctuation, collapse whitespace, trim."""
+def _is_invisible(ch: str) -> bool:
+    if ch in _HANGUL_FILLERS or ch == "\u034f":  # combining grapheme joiner
+        return True
+    code = ord(ch)
+    if 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF:  # variation selectors
+        return True
+    return unicodedata.category(ch) == "Cf"  # ZWSP/ZWNJ/ZWJ, LRM/RLM, soft hyphen, BOM, tag chars, ...
+
+
+def strip_invisible(text: str | None) -> str:
+    """Remove characters that render as nothing (format chars, Hangul fillers, variation selectors)."""
     if not text:
         return ""
-    value = unicodedata.normalize("NFKC", text).lower()
+    return "".join(ch for ch in text if not _is_invisible(ch))
+
+
+def normalize(text: str | None) -> str:
+    """ORACLE 정규화: NFKC, invisible chars and punctuation become spaces, lowercase, collapse whitespace, trim.
+
+    Invisible chars become a space (not nothing) so a filler used as a fake separator cannot glue or split
+    words differently from what a visible separator would; sanitizing uses strip_invisible() instead.
+    """
+    if not text:
+        return ""
+    value = "".join(" " if _is_invisible(ch) else ch for ch in unicodedata.normalize("NFKC", text)).lower()
     value = _PUNCT_RE.sub(" ", value)
     value = value.replace("_", " ")
     return _WS_RE.sub(" ", value).strip()

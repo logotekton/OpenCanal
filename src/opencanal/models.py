@@ -168,7 +168,9 @@ class Redaction(BaseModel):
     """One thing the sanitizer removed or masked (reported back on import)."""
 
     location: str  # e.g. "nodes[3].summary", "nodes[0].properties.source_url"
-    kind: Literal["dropped_field", "path", "email", "phone", "url", "truncated", "dangling_edge"]
+    kind: Literal[
+        "dropped_field", "path", "email", "phone", "url", "rrn", "secret", "invisible", "truncated", "dangling_edge"
+    ]
     detail: str = ""
 
 
