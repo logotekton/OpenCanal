@@ -1,5 +1,5 @@
 {
-  "_comment": "Oracle-owned (docs/oracle/ORACLE_MANIFEST.md §5.4). Builder must not edit. Do not tune tau to make tests pass. v.4: stopwords extended for topicless detection (MUST-M3). v.5: default strategy relevance_with_distance_bonus (owner decision), distance_bonus 0.3 (planner proposal).",
+  "_comment": "Oracle-owned (docs/oracle/ORACLE_MANIFEST.md §5.4). Builder must not edit. Do not tune tau to make tests pass. v.4: stopwords extended for topicless detection (MUST-M3). v.5: default strategy relevance_with_distance_bonus (owner decision), distance_bonus 0.3 (planner proposal). v.6: content-based distance (owner decision), distance_saturation 0.25, far_distance 0.5 (planner proposals).",
   "tau": 0.2,
   "strategy": "relevance_with_distance_bonus",
   "strategies_available": [
@@ -149,5 +149,7 @@
     "review",
     "rate"
   ],
-  "distance_bonus": 0.3
+  "distance_bonus": 0.3,
+  "distance_saturation": 0.25,
+  "far_distance": 0.5
 }
