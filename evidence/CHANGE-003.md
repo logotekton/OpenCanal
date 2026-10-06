@@ -188,3 +188,17 @@ git archive ba7b438 | tar -x -C $I/trees/before_v4   # v.4 계약 + 수정 전 s
 - **TS 빈틈**: §7의 3개 사보타주(T06, T25, T81)는 oracle 테스트로 막혀 있지 않다. T81은 단위 테스트로도 막혀 있지 않다.
 - **모듈 크기**: 시작 상한 약 600줄을 넘는다. store.py 964줄, service.py 848줄, validator.py 713줄, cli.py 662줄, sanitize.py 652줄이다.
 - **rollback**: 이번 라운드에 스키마 변경은 없다. 되돌리려면 `ba7b438` 대비 작업 트리 변경(src 8개 파일, unit 테스트, 새 oracle 테스트 파일)을 버린다. SS 빌더가 원본 `store.py.orig`, `service.py.orig`를 scratchpad에 남겼다.
+
+## 부록 — 남은 사보타주 3종 고정 (플래너, 통합 뒤)
+
+통합 보고에서 tests/oracle이 잡지 못한다고 한 T06·T25·T81을 `tests/oracle/test_oracle_v4_gaps.py`로 고정했다. Oracle 문구에서 바로 쓴 테스트이고 src는 바꾸지 않았다.
+
+| 사보타주 | Oracle | 새 테스트 | 실제 트리 | 사보타주 복사본 |
+|---|---|---|---|---|
+| T06 MCP initialize 지시문에 상위 티어 도구 이름 추가 | NEVER-06 | `test_never_06_v4_initialize_result_names_no_hidden_tool` | 통과 | 실패 |
+| T25 SOURCE_MISMATCH 메시지가 인용한 남의 라벨을 그대로 적음 | NEVER-09 v.4 | `test_never_09_v4_validation_failed_keeps_foreign_strings_in_untrusted_data` | 통과 | 실패 |
+| T81 반복 비율 분모에 비창발 엣지의 rationale까지 넣음 | MUST-Q7 | `test_must_q7_v4_templated_share_counts_emergent_edges_only` | 통과 | 실패 |
+
+- 사보타주 복사본: scratchpad `gapsab/T06|T25|T81`. 각각 `PYTHONPATH=<복사본>/src`로 `tests/oracle/test_oracle_v4_gaps.py`를 돌렸다.
+- 전체 결과: `.venv/bin/python -m pytest -q -p no:cacheprovider` → **1288 passed**.
+- 정정: 커밋 `de351bc` 메시지의 "사보타주 22종 중 22종 빨강"은 사실과 다르다. 그 시점에는 19종이 빨강이었다 (18종 직접, T05는 stdio 하위 프로세스가 변형 코드를 import한 경우). 이 부록으로 22종 모두 빨강이 된다.
