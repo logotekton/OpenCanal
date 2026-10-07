@@ -2,7 +2,7 @@
 
 import -> publish with confirm_hash -> canal_open Q-01 -> canal_submit good-01 (ids rewritten to the real
 subbrain ids/versions) -> every participant reads the deltabrain, a non-participant gets NOT_FOUND ->
-deltabrain_rate on an emergent edge.
+deltabrain_rate on rating units (Oracle v.8: a bridge node or an emergent edge, `target_id`).
 """
 
 from __future__ import annotations
@@ -24,7 +24,9 @@ from .conftest import (
     rewrite_provenance,
 )
 
-GOOD_EMERGENT = {"e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10"}
+# ORACLE v.8 §4: e1/e2 are query edges and e5-e8 self-anchor edges, so they are not emergent (was: e3-e10).
+GOOD_EMERGENT = {"e3", "e4", "e9", "e10"}
+GOOD_BRIDGES = {"n1", "n2"}
 
 
 def test_flow_q01_import_publish_open_submit_read_rate(world: World):
@@ -61,6 +63,7 @@ def test_flow_q01_import_publish_open_submit_read_rate(world: World):
     db_id = sub["deltabrain_id"]
     assert set(sub["stats"]["emergent_edge_ids"]) == GOOD_EMERGENT
     assert set(sub["stats"]["host_touching_emergent_edge_ids"]) == GOOD_EMERGENT - {"e9"}
+    assert set(sub["stats"]["bridge_node_ids"]) == set(sub["stats"]["host_bridge_node_ids"]) == GOOD_BRIDGES
 
     # 4. every participant can read it; a non-participant cannot
     for uid in participants:
@@ -80,22 +83,26 @@ def test_flow_q01_import_publish_open_submit_read_rate(world: World):
             fake,
         )
 
-    # 5. L2 label on an emergent edge (HUMAN-01 input)
-    assert_ok(world.call("user_a", "deltabrain_rate", deltabrain_id=db_id, edge_id="e3", novelty=1, validity=1, usefulness=1))
-    assert_ok(world.call("user_a", "deltabrain_rate", deltabrain_id=db_id, edge_id="e4", novelty=0, validity=1, usefulness=1))
+    # 5. L2 label on rating units (HUMAN-01 v.8: bridge nodes and emergent edges; TASK §5 `target_id`)
+    #    Was (v.7): `edge_id`, emergent edges only, NOT_EMERGENT_EDGE otherwise.
+    assert_ok(world.call("user_a", "deltabrain_rate", deltabrain_id=db_id, target_id="e3", novelty=1, validity=1, usefulness=1))
+    assert_ok(world.call("user_a", "deltabrain_rate", deltabrain_id=db_id, target_id="e4", novelty=0, validity=1, usefulness=1))
+    assert_ok(world.call("user_a", "deltabrain_rate", deltabrain_id=db_id, target_id="n1", novelty=1, validity=1, usefulness=0))
+    for not_unit in ("e1", "e5", "s-a1"):  # query edge, self-anchor edge, source node (§9 v.8: otherwise NOT_RATEABLE)
+        assert_err(
+            world.call("user_a", "deltabrain_rate", deltabrain_id=db_id, target_id=not_unit, novelty=1, validity=1, usefulness=1),
+            "NOT_RATEABLE",
+        )
     assert_err(
-        world.call("user_a", "deltabrain_rate", deltabrain_id=db_id, edge_id="e1", novelty=1, validity=1, usefulness=1),
-        "NOT_EMERGENT_EDGE",
-    )
-    assert_err(
-        world.call("user_a", "deltabrain_rate", deltabrain_id=db_id, edge_id="e3", novelty=2, validity=1, usefulness=1),
+        world.call("user_a", "deltabrain_rate", deltabrain_id=db_id, target_id="e3", novelty=2, validity=1, usefulness=1),
         "INVALID_ARGUMENT",
     )
     env = assert_ok(world.call("user_a", "deltabrain_get", deltabrain_id=db_id))
     ratings = pick(env, "ratings")
-    assert "e3" in dumps(ratings) and "e4" in dumps(ratings)
+    assert "e3" in dumps(ratings) and "e4" in dumps(ratings) and "n1" in dumps(ratings)
     rated = world.store.ratings_for(db_id)
     assert {(r.edge_id, r.rater_id, r.novelty, r.validity, r.usefulness) for r in rated} == {
         ("e3", "user_a", 1, 1, 1),
         ("e4", "user_a", 0, 1, 1),
+        ("n1", "user_a", 1, 1, 0),
     }

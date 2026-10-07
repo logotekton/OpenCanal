@@ -184,14 +184,17 @@ def _collect(info: dict[str, Any], viewer: str) -> dict[str, Any]:
                 "canal_get_again": w.call(viewer, "canal_get", canal_id=canal_id),
                 "deltabrain_get": w.call(viewer, "deltabrain_get", deltabrain_id=db_id),
                 "deltabrain_export": w.call(viewer, "deltabrain_export", deltabrain_id=db_id),
-                "rate_e3": w.call(viewer, "deltabrain_rate", deltabrain_id=db_id, edge_id="e3", novelty=1, validity=1, usefulness=1),
-                "rate_e9": w.call(viewer, "deltabrain_rate", deltabrain_id=db_id, edge_id="e9", novelty=1, validity=0, usefulness=1),
-                "rate_e404": w.call(viewer, "deltabrain_rate", deltabrain_id=db_id, edge_id="e404", novelty=1, validity=1, usefulness=1),
+                # Oracle v.8 / TASK §5: `target_id` (bridge node or emergent edge); was `edge_id`.
+                "rate_e3": w.call(viewer, "deltabrain_rate", deltabrain_id=db_id, target_id="e3", novelty=1, validity=1, usefulness=1),
+                "rate_e9": w.call(viewer, "deltabrain_rate", deltabrain_id=db_id, target_id="e9", novelty=1, validity=0, usefulness=1),
+                "rate_n2": w.call(viewer, "deltabrain_rate", deltabrain_id=db_id, target_id="n2", novelty=0, validity=1, usefulness=1),
+                "rate_e5": w.call(viewer, "deltabrain_rate", deltabrain_id=db_id, target_id="e5", novelty=1, validity=1, usefulness=1),
+                "rate_e404": w.call(viewer, "deltabrain_rate", deltabrain_id=db_id, target_id="e404", novelty=1, validity=1, usefulness=1),
                 "deltabrain_get_after_rating": w.call(viewer, "deltabrain_get", deltabrain_id=db_id),
             }
         )
     for resp in worlds:
-        for name in ("canal_get", "deltabrain_get", "deltabrain_export"):
+        for name in ("canal_get", "deltabrain_get", "deltabrain_export", "rate_e3", "rate_e9", "rate_n2"):
             assert_ok(resp[name])
     shared = {"deltabrain_list": assert_ok(w.call(viewer, "deltabrain_list"))}
     return {"worlds": worlds, "shared": shared}

@@ -129,7 +129,7 @@ class DeltabrainIdArgs(_Args):
 
 class DeltabrainRateArgs(_Args):
     deltabrain_id: IdStr
-    edge_id: IdStr
+    target_id: IdStr = Field(description="다리 노드 ID 또는 창발 엣지 ID / a bridge node id or an emergent edge id")
     novelty: Label01
     validity: Label01
     usefulness: Label01
@@ -231,8 +231,10 @@ _TOOL_DEFS: tuple[_ToolDef, ...] = (
     ),
     _ToolDef(
         "deltabrain_rate",
-        "델타브레인의 창발 엣지 하나에 새로움·타당성·쓸모를 0 또는 1로 라벨한다. 타당하지만 뻔한 연결은 새로움 0이다. "
-        "/ Label one emergent edge of a deltabrain for novelty, validity and usefulness (0 or 1). "
+        "델타브레인의 평가 단위 하나(다리 노드 또는 창발 엣지, target_id)에 새로움·타당성·쓸모를 0 또는 1로 라벨한다. "
+        "쓸모에는 현실 제약(비용·공수·공정)을 포함한다. 타당하지만 뻔한 연결은 새로움 0이다. "
+        "/ Label one rating unit of a deltabrain (a bridge node or an emergent edge, by target_id) for novelty, "
+        "validity and usefulness (0 or 1); usefulness includes real-world constraints (cost, effort, process). "
         "A valid but obvious connection gets novelty 0.",
         DeltabrainRateArgs,
         "_deltabrain_rate",
@@ -311,7 +313,7 @@ def _graph_from_view(view: dict[str, Any]) -> dict[str, Any]:
 
 
 def _stats_counts(stats: dict[str, Any]) -> dict[str, Any]:
-    """Numbers only. The edge-id lists are host-written strings and stay under untrusted_data (NEVER-09)."""
+    """Numbers only. The node/edge-id lists are host-written strings and stay under untrusted_data (NEVER-09)."""
     return {
         "node_count": stats["node_count"],
         "edge_count": stats["edge_count"],
@@ -319,35 +321,67 @@ def _stats_counts(stats: dict[str, Any]) -> dict[str, Any]:
         "owners_involved": stats["owners_involved"],
         "emergent_edge_count": len(stats["emergent_edge_ids"]),
         "host_touching_emergent_edge_count": len(stats["host_touching_emergent_edge_ids"]),
+        "bridge_node_count": len(stats["bridge_node_ids"]),
+        "host_bridge_node_count": len(stats["host_bridge_node_ids"]),
+        "bridges_with_constraints": stats["bridges_with_constraints"],
     }
 
 
-def _ratings_summary(ratings: list[EdgeRating], emergent_edge_ids: list[str], viewer_id: str) -> dict[str, Any]:
-    """Per-edge sums (no rater ids) over the edges that are emergent for this viewer (NEVER-11: the viewer's
-    emergent set, never the stored one). An edge counts as good when every rating of it is 1/1/1 (HUMAN-01)."""
-    per_edge: dict[str, dict[str, Any]] = {}
+def _rating_units(stats: dict[str, Any]) -> dict[str, str]:
+    """Rating units (ORACLE §4 v.8) = bridge nodes ∪ emergent edges of the VIEWER's stats, id -> kind.
+
+    Node and edge ids live in separate namespaces, so one id may name both a bridge and an emergent edge; it is
+    then one rating target (ratings are stored by id), listed as a bridge."""
+    units = {node_id: "bridge_node" for node_id in stats["bridge_node_ids"]}
+    for edge_id in stats["emergent_edge_ids"]:
+        units.setdefault(edge_id, "emergent_edge")
+    return units
+
+
+def _ratings_summary(
+    ratings: list[EdgeRating], units: dict[str, str], viewer_id: str, *, own_only: bool
+) -> dict[str, Any]:
+    """Per-unit sums (no rater ids) over the rating units of this viewer's stats (NEVER-11: the viewer's units,
+    never the stored ones). A unit counts as good when every rating of it is 1/1/1; quality = good / rated
+    units (HUMAN-01 v.8). Ratings of ids that are not units for this viewer are left out.
+
+    With `own_only` (something is withheld from this viewer, Service._withholds_anything) only the viewer's own
+    rows count, and "scope" says so: another rater's rows follow that rater's own view and the number of raters
+    bounds the number of distinct participants, so either would tell whether a masked contributor is one of the
+    plainly shown owners (NEVER-11 v.4 "평가 응답")."""
+    if own_only:
+        ratings = [r for r in ratings if r.rater_id == viewer_id]
+    per_unit: dict[str, dict[str, Any]] = {}
     mine: list[dict[str, Any]] = []
     for r in ratings:
-        agg = per_edge.setdefault(
-            r.edge_id, {"edge_id": r.edge_id, "raters": 0, "novelty": 0, "validity": 0, "usefulness": 0, "all_three": 0}
-        )
+        kind = units.get(r.edge_id)  # EdgeRating.edge_id holds the rating target id (models.py, v.8)
+        if kind is None:
+            continue
+        agg = per_unit.setdefault(r.edge_id, {"target_id": r.edge_id, "kind": kind, "raters": 0, "novelty": 0,
+                                              "validity": 0, "usefulness": 0, "all_three": 0})
         agg["raters"] += 1
         agg["novelty"] += r.novelty
         agg["validity"] += r.validity
         agg["usefulness"] += r.usefulness
         agg["all_three"] += int(r.novelty == r.validity == r.usefulness == 1)
         if r.rater_id == viewer_id:
-            mine.append({"edge_id": r.edge_id, "novelty": r.novelty, "validity": r.validity, "usefulness": r.usefulness})
-    emergent = set(emergent_edge_ids)
-    rated = [agg for eid, agg in per_edge.items() if eid in emergent]
+            mine.append({"target_id": r.edge_id, "kind": kind, "novelty": r.novelty, "validity": r.validity,
+                         "usefulness": r.usefulness})
+    rated = sorted(per_unit.values(), key=lambda a: a["target_id"])
     good = sum(1 for agg in rated if agg["all_three"] == agg["raters"])
     return {
-        "edges": sorted(rated, key=lambda a: a["edge_id"]),
-        "mine": sorted(mine, key=lambda a: a["edge_id"]),
-        "emergent_edge_count": len(emergent),
-        "rated_emergent_edge_count": len(rated),
+        "scope": "own" if own_only else "all",
+        "units": rated,
+        "mine": sorted(mine, key=lambda a: a["target_id"]),
+        "rating_unit_count": len(units),
+        "bridge_node_count": sum(1 for kind in units.values() if kind == "bridge_node"),
+        "emergent_edge_count": sum(1 for kind in units.values() if kind == "emergent_edge"),
+        "rated_unit_count": len(rated),
         "quality": (good / len(rated)) if rated else None,
     }
+
+
+_RATING_SUMMARY_NUMBERS = ("rating_unit_count", "bridge_node_count", "emergent_edge_count", "rated_unit_count", "quality")
 
 
 class Service:
@@ -791,20 +825,45 @@ class Service:
     # -- deltabrains -------------------------------------------------------
     # Everything below works from store.get_deltabrain_for_viewer only, never from the stored record: its "stats"
     # are computed over the identities this viewer is shown, so no number, list or error code can tell whether a
-    # masked contributor is one of the plainly shown owners (ORACLE v.4 NEVER-11).
+    # masked contributor is one of the plainly shown owners (ORACLE v.4 NEVER-11). Other participants' ratings
+    # are not: each was accepted under its rater's own view. They are counted only while nothing is withheld
+    # from this viewer (_withholds_anything).
+
+    def _withholds_anything(self, user: User, view: dict[str, Any]) -> bool:
+        """True when this viewer is shown any subbrain of the deltabrain or of its canal as withheld: a
+        "비공개 기여자" in the view, or a withheld host or member in canal_get (cited or not).
+
+        Then other raters' rows stay out of the rating aggregates (NEVER-11 v.4 "평가 응답"; N11-V8-RATE-1/2).
+        A rater who owns both a visible and the masked subbrain gets NOT_RATEABLE for the units that join them,
+        rows stored while the subbrain was public carry the same split, and a rater whose only subbrain is
+        withheld adds one to the rater count, which then exceeds the identities shown. Whether anything is
+        withheld is itself shown to the viewer (canal_get entries, masked contributors), so this switch adds no
+        channel. HUMAN-01 is labelled by the owner alone in v0 (ORACLE §7), so own ratings are the metric used."""
+        if any(c.get("owner_id") is None for c in view.get("contributors") or []):
+            return True
+        canal = self._store.get_canal_for_viewer(user.id, view["canal_id"])
+        ctx_subbrains = self._store.canal_context(canal.id).subbrains
+        shown = [(canal.host_subbrain_id, canal.host_version, canal.host_user_id)]
+        shown += [(m.subbrain_id, m.version, m.owner_id) for m in canal.members]
+        return any(
+            self._visible_in_canal(user, ctx_subbrains, sid, version, owner) is None for sid, version, owner in shown
+        )
 
     def _deltabrain_get(self, user: User, a: DeltabrainIdArgs) -> dict[str, Any]:
         view = self._store.get_deltabrain_for_viewer(user.id, a.deltabrain_id)
         stats = view["stats"]
-        ratings = _ratings_summary(self._store.ratings_for(a.deltabrain_id), list(stats["emergent_edge_ids"]), user.id)
+        ratings = _ratings_summary(
+            self._store.ratings_for(a.deltabrain_id), _rating_units(stats), user.id,
+            own_only=self._withholds_anything(user, view),
+        )
         return {
             "ok": True,
             "deltabrain_id": view["id"],
             "canal_id": view["canal_id"],
-            # Numbers only at top level; edge ids are host-written strings (NEVER-09) and live in untrusted_data
-            # (deltabrain.stats, ratings).
+            # Numbers only at top level; node and edge ids are host-written strings (NEVER-09) and live in
+            # untrusted_data (deltabrain.stats, ratings).
             "stats": _stats_counts(stats),
-            "rating_summary": {k: ratings[k] for k in ("emergent_edge_count", "rated_emergent_edge_count", "quality")},
+            "rating_summary": {k: ratings[k] for k in _RATING_SUMMARY_NUMBERS},
             "untrusted_data": _untrusted(deltabrain=view, ratings=ratings),
         }
 
@@ -821,25 +880,24 @@ class Service:
 
     def _deltabrain_rate(self, user: User, a: DeltabrainRateArgs) -> dict[str, Any]:
         view = self._store.get_deltabrain_for_viewer(user.id, a.deltabrain_id)  # participant check (NOT_FOUND)
-        # Both checks use only what the view already shows this viewer: every edge id is listed in it, and the
-        # emergent set is the viewer's own, so neither error code can re-identify a masked contributor.
-        if a.edge_id not in {e.get("id") for e in view["edges"]}:
-            raise _not_found()
-        if a.edge_id not in set(view["stats"]["emergent_edge_ids"]):
+        # Any id that is not a rating unit of the viewer's own stats -- an unknown id included -- is NOT_RATEABLE
+        # (ORACLE §9 v.8 "아니면 NOT_RATEABLE"). The units come from what the view already shows this viewer, so the
+        # code cannot re-identify a masked contributor (NEVER-11 v.4).
+        if a.target_id not in _rating_units(view["stats"]):
             raise _err(
-                ErrorCode.NOT_EMERGENT_EDGE,
-                "창발 엣지에만 라벨을 붙일 수 있습니다 / only emergent edges can be rated",
+                ErrorCode.NOT_RATEABLE,
+                "다리 노드나 창발 엣지에만 라벨을 붙일 수 있습니다 / only bridge nodes and emergent edges can be rated",
             )
         rating = EdgeRating(
-            edge_id=a.edge_id, rater_id=user.id, novelty=a.novelty, validity=a.validity, usefulness=a.usefulness
+            edge_id=a.target_id, rater_id=user.id, novelty=a.novelty, validity=a.validity, usefulness=a.usefulness
         )
         self._store.rate_edge(rating, a.deltabrain_id)
         return {
             "ok": True,
             "deltabrain_id": a.deltabrain_id,
             "rating": {"novelty": a.novelty, "validity": a.validity, "usefulness": a.usefulness},
-            # The edge id was chosen by the canal host (NEVER-09).
-            "untrusted_data": _untrusted(edge_id=a.edge_id),
+            # The node or edge id was chosen by the canal host (NEVER-09).
+            "untrusted_data": _untrusted(target_id=a.target_id),
         }
 
     def _match_explain(self, user: User, a: MatchInspectArgs) -> dict[str, Any]:

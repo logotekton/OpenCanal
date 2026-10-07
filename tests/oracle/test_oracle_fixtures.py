@@ -179,13 +179,29 @@ def _ctx_brains():
     return {(fixture_sid(f), 1): load_brain(f) for f in ("A", "B", "C")}
 
 
-def _effective_owners(edge, by_id, ctx):
-    refs = list(edge.provenance)
-    for end in (edge.source, edge.target):
-        refs += by_id[end].provenance
-    owners = {ctx[(r.subbrain_id, r.version)]["owner"]["user_id"] for r in refs}
-    touches_host = any((r.subbrain_id, r.version) == ("sb_A", 1) for r in refs)
-    return owners, touches_host
+def _node_owners(node, ctx):
+    return {ctx[(r.subbrain_id, r.version)]["owner"]["user_id"] for r in node.provenance}
+
+
+def _cites_host(node):
+    return any((r.subbrain_id, r.version) == ("sb_A", 1) for r in node.provenance)
+
+
+def _v8_edge_kind(edge, by_id, ctx):
+    """ORACLE v.8 §4 by hand: "query" / "self_anchor" / "emergent" / "plain". Edge-level refs are evidence only (v.3).
+
+    Was (v.7 and earlier): every edge whose endpoint (+ edge) refs had >= 2 owners was emergent.
+    """
+    s, t = by_id[edge.source], by_id[edge.target]
+    if NodeKind.QUERY in (s.kind, t.kind):
+        return "query"
+    if {s.kind, t.kind} == {NodeKind.NEW, NodeKind.SOURCE}:
+        new, src = (s, t) if s.kind == NodeKind.NEW else (t, s)
+        if {(r.subbrain_id, r.version, r.node_id) for r in src.provenance} & {
+            (r.subbrain_id, r.version, r.node_id) for r in new.provenance
+        }:
+            return "self_anchor"
+    return "emergent" if len(_node_owners(s, ctx) | _node_owners(t, ctx)) >= 2 else "plain"
 
 
 def test_fixture_good01_satisfies_every_l1_rule_by_hand(cfg):
@@ -235,20 +251,33 @@ def test_fixture_good01_satisfies_every_l1_rule_by_hand(cfg):
                 dq.append(nb)
     assert all(dist.get(i, 99) <= 3 for i in by_id), dist
 
-    emergent, host_touching, rationales = [], [], []
+    # ORACLE v.8 §4 / MUST-Q3 / MUST-Q4 / MUST-Q7: bridges need a 40..600 summary, emergent edges a 40..400 rationale,
+    # and no two units share a description.
+    bridges = [n.id for n in sub.nodes if n.kind == NodeKind.NEW and len(_node_owners(n, ctx)) >= 2]
+    host_bridges = [b for b in bridges if _cites_host(by_id[b])]
+    descriptions = []
+    for b in bridges:
+        s = normalize(by_id[b].summary)
+        assert 40 <= len(s) <= 600, (b, len(s))
+        descriptions.append(s)
+    kinds = {}
+    emergent, host_touching = [], []
     for e in sub.edges:
         assert e.relation in ALLOWED_RELATIONS
-        owners, touches = _effective_owners(e, by_id, ctx)
-        if len(owners) >= 2:
+        kinds[e.id] = _v8_edge_kind(e, by_id, ctx)
+        if kinds[e.id] == "emergent":
             emergent.append(e.id)
-            if touches:
+            if _cites_host(by_id[e.source]) or _cites_host(by_id[e.target]):
                 host_touching.append(e.id)
             r = normalize(e.rationale)
             assert 60 <= len(r) <= 150, (e.id, len(r))  # well inside 40..400
-            rationales.append(r)
-    assert len(set(rationales)) == len(rationales)
-    assert set(emergent) == {"e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10"}
-    assert set(host_touching) == set(emergent) - {"e9"}
+            descriptions.append(r)
+    assert len(set(descriptions)) == len(descriptions)
+    assert set(bridges) == set(host_bridges) == {"n1", "n2"}
+    assert set(emergent) == {"e3", "e4", "e9", "e10"}
+    assert set(host_touching) == {"e3", "e4", "e10"}
+    assert {k for k, v in kinds.items() if v == "self_anchor"} == {"e5", "e6", "e7", "e8"}
+    assert {k for k, v in kinds.items() if v == "query"} == {"e1", "e2"}
 
     edges = {e.id: e for e in sub.edges}
     g1, g2 = edges["e3"], edges["e4"]
@@ -274,6 +303,7 @@ def test_fixture_good01_satisfies_every_l1_rule_by_hand(cfg):
         "bad-off-query",
         "bad-two-queries",
         "bad-templated",
+        "bad-templated-02",
         "bad-no-rationale",
         "bad-source-mismatch",
         "bad-schema-duplicate-id",
@@ -283,3 +313,36 @@ def test_fixture_good01_satisfies_every_l1_rule_by_hand(cfg):
 def test_fixture_bad_deltabrains_parse_as_submissions(name):
     """Every bad-* file is well-formed JSON for DeltabrainSubmission, so the validator sees its target rule."""
     DeltabrainSubmission.model_validate(load_delta(name))
+
+
+# ---------------------------------------------------------------------------
+# Oracle v.8 vs §6.4 golden files (by hand, no implementation)
+# ---------------------------------------------------------------------------
+
+
+def test_fixture_v8_bad_templated_template_sits_on_non_unit_edges():
+    """CONFLICT for the Oracle owner: §6.4 says bad-templated.json -> TEMPLATED_RATIONALE, but under v.8 §4 the shared
+    template sits on e5, e6, e7 (self-anchor edges, not units) and e10 (the only emergent edge carrying it), so MUST-Q7
+    v.8 counts 0 of 6 units as duplicates. fixtures/deltabrains/bad-templated-02.json moves the template onto emergent
+    edges (e4, e9, e10 -> 3 of 6). bad-templated.json itself is frozen and left unchanged."""
+    sub = DeltabrainSubmission.model_validate(load_delta("bad-templated"))
+    ctx = _ctx_brains()
+    by_id = {n.id: n for n in sub.nodes}
+    texts: dict[str, list[str]] = {}
+    for e in sub.edges:
+        if e.rationale:
+            texts.setdefault(normalize(e.rationale), []).append(e.id)
+    shared = [ids for ids in texts.values() if len(ids) > 1]
+    assert shared == [["e5", "e6", "e7", "e10"]], shared
+    kinds = {e.id: _v8_edge_kind(e, by_id, ctx) for e in sub.edges}
+    assert [kinds[i] for i in shared[0]] == ["self_anchor", "self_anchor", "self_anchor", "emergent"]
+
+    sub2 = DeltabrainSubmission.model_validate(load_delta("bad-templated-02"))
+    by_id2 = {n.id: n for n in sub2.nodes}
+    texts2: dict[str, list[str]] = {}
+    for e in sub2.edges:
+        if _v8_edge_kind(e, by_id2, ctx) == "emergent":
+            texts2.setdefault(normalize(e.rationale), []).append(e.id)
+    assert sorted(ids for ids in texts2.values() if len(ids) > 1) == [["e4", "e9", "e10"]]
+    good = {n.id: n.model_dump() for n in DeltabrainSubmission.model_validate(load_delta("good-01")).nodes}
+    assert {n.id: n.model_dump() for n in sub2.nodes} == good, "bad-templated-02 differs from good-01 only in rationales"

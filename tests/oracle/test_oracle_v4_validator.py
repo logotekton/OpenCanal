@@ -12,9 +12,11 @@ import pytest
 from opencanal.models import CanalContext, Visibility
 from opencanal.textnorm import normalize
 
-from .conftest import Q01, dumps, fixture_version, load_delta, run_validator, violation_codes
+from ._v8 import analyse
+from .conftest import Q01, dumps, fixture_canal_context, fixture_version, load_delta, run_validator, violation_codes
 
-GOOD_EMERGENT = {"e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10"}
+# ORACLE v.8 §4: e1/e2 (query edges) and e5-e8 (self-anchor edges) are not emergent. Was (v.7): e3-e10.
+GOOD_EMERGENT = {"e3", "e4", "e9", "e10"}
 
 
 def _ref(sb: str, node: str, version: int = 1) -> dict:
@@ -59,9 +61,12 @@ def host_ref_on_member_bridges() -> dict:
 
 
 def test_must_q3_v3_edge_level_host_ref_does_not_touch_host(ctx, cfg):
-    result = _check(host_ref_on_member_bridges(), ctx, cfg, {"HOST_NOT_TOUCHED"})
+    # ORACLE v.8: n-bc's 27-char summary also trips MUST-Q4 (bridge summary 40..600) -> RATIONALE_MISSING co-fires;
+    # e4 (n-bc -> s-b1) and e5 (s-c2 -> n-bc) are self-anchor edges, so only e3 is emergent (was v.7: e3, e4, e5).
+    result = _check(host_ref_on_member_bridges(), ctx, cfg, {"HOST_NOT_TOUCHED"}, tolerated={"RATIONALE_MISSING"})
     assert result.stats is not None
-    assert set(result.stats.emergent_edge_ids) == {"e3", "e4", "e5"}, "B–C bridges are still emergent"
+    assert set(result.stats.emergent_edge_ids) == {"e3"}, "the B–C source–source edge is still emergent"
+    assert result.stats.bridge_node_ids == ["n-bc"] and result.stats.host_bridge_node_ids == [], "an edge ref is evidence"
     assert result.stats.host_touching_emergent_edge_ids == [], "an edge-level ref is evidence, not an endpoint"
 
 
@@ -236,11 +241,24 @@ R12 = "블록의 요철처럼 위치마다 다른 맞물림을 주면 크레인 
 SHARED = "형상이 맞지 않으면 아예 결합하지 않도록 만드는 원리를 설치 절차에 옮겨, 틀린 조합이 볼트를 조이기 전에 바로 드러나게 한다."
 
 
-def ten_emergent() -> dict:
-    """good-01 (8 emergent edges) + two more emergent, host-touching edges with their own rationales."""
+R13 = "약하게 붙은 틀린 짝이 저절로 떨어져 나가는 세포의 방식은, 게임에서 틀린 조합이 화면에 남지 않도록 막는 규칙이 왜 실수를 줄이는지 보여 준다."
+R14 = "맞물리는 표면끼리만 붙게 하려면 돌기와 홈의 치수가 제작 오차보다 넉넉해야 한다. 허용 오차를 단계별로 나눠 주지 않으면 맞는 유닛도 들어가지 않는다."
+
+
+def ten_units() -> dict:
+    """Exactly 10 rating units under ORACLE v.8 (MUST-Q7 counts bridge summaries + emergent edge rationales):
+    good-01's 2 bridges + 4 emergent edges, plus four cross-subbrain emergent edges e11..e14.
+
+    Was (v.7) `ten_emergent`: good-01's 8 emergent edges + e11, e12. Under v.8 that graph has only 8 units, which
+    turned the "2 of 10 = 20% allowed" cases into 2 of 8 = 25%.
+    """
     g = load_delta("good-01")
     g["edges"].append({"id": "e11", "source": "s-c2", "target": "s-a1", "relation": "explains", "rationale": R11})
     g["edges"].append({"id": "e12", "source": "s-b1", "target": "s-a1", "relation": "applies_to", "rationale": R12})
+    g["edges"].append({"id": "e13", "source": "s-c2", "target": "s-b1", "relation": "explains", "rationale": R13})
+    g["edges"].append({"id": "e14", "source": "s-c1", "target": "s-a3", "relation": "requires", "rationale": R14})
+    ref = analyse(g, fixture_canal_context())
+    assert len(ref.units) == 10 and ref.templated_share == 0, "self-check (v.8 reference)"
     return g
 
 
@@ -260,7 +278,7 @@ def _rationale_ok(text: str) -> None:
 
 
 def test_must_q7_three_of_ten_identical_rationales_is_templated(ctx, cfg):
-    g = ten_emergent()
+    g = ten_units()
     _rationale_ok(SHARED)
     for eid in ("e10", "e11", "e12"):
         _edge(g, eid)["rationale"] = SHARED
@@ -268,25 +286,25 @@ def test_must_q7_three_of_ten_identical_rationales_is_templated(ctx, cfg):
 
 
 def test_must_q7_two_of_ten_identical_rationales_is_allowed(ctx, cfg):
-    g = ten_emergent()
+    g = ten_units()
     for eid in ("e11", "e12"):
         _edge(g, eid)["rationale"] = SHARED
     result = _accept(g, ctx, cfg)  # 2/10 = 20% (이하)
-    assert len(result.stats.emergent_edge_ids) == 10
+    assert len(result.stats.emergent_edge_ids) + len(result.stats.bridge_node_ids) == 10  # v.8 units (was 10 edges)
 
 
 def test_must_q7_v4_rationales_differing_only_by_endpoint_labels_are_identical(ctx, cfg):
-    g = ten_emergent()
-    for eid in ("e3", "e4", "e7"):
+    g = ten_units()
+    for eid in ("e3", "e4", "e10"):  # v.8: e10 replaces e7, which is a self-anchor edge (not a unit) now
         _edge(g, eid)["rationale"] = label_template(g, eid)
         _rationale_ok(_edge(g, eid)["rationale"])
-    texts = {_edge(g, eid)["rationale"] for eid in ("e3", "e4", "e7")}
+    texts = {_edge(g, eid)["rationale"] for eid in ("e3", "e4", "e10")}
     assert len(texts) == 3, "self-check: the raw rationales all differ (only by their endpoint labels)"
     _check(g, ctx, cfg, {"TEMPLATED_RATIONALE"})  # 3/10 after label substitution
 
 
 def test_must_q7_v4_two_label_templates_of_ten_is_allowed(ctx, cfg):
-    g = ten_emergent()
+    g = ten_units()
     for eid in ("e3", "e4"):
         _edge(g, eid)["rationale"] = label_template(g, eid)
     _accept(g, ctx, cfg)  # 2/10
@@ -294,8 +312,8 @@ def test_must_q7_v4_two_label_templates_of_ten_is_allowed(ctx, cfg):
 
 def test_must_q7_v4_rationales_differing_by_a_non_label_word_are_not_templated(ctx, cfg):
     """§10: near-duplicate detection is a v.5 candidate, not v.4 — only label substitution is in scope."""
-    g = ten_emergent()
-    for eid, when in (("e3", "고정 전에"), ("e4", "인양 직후에"), ("e7", "볼트 체결 단계에서")):
+    g = ten_units()
+    for eid, when in (("e3", "고정 전에"), ("e4", "인양 직후에"), ("e10", "볼트 체결 단계에서")):
         _edge(g, eid)["rationale"] = label_template(g, eid, when)
     _accept(g, ctx, cfg)
 

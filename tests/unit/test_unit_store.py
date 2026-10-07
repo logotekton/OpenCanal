@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from opencanal import crypto
+from opencanal import crypto, validator
 from opencanal.models import (
     CanalMember,
     DeltabrainStats,
@@ -28,7 +28,7 @@ from opencanal.models import (
     Tier,
     Visibility,
 )
-from opencanal.store import MASKED_DISPLAY, MAX_USER_ID_CHARS, Store
+from opencanal.store import MASKED_DISPLAY, MAX_USER_ID_CHARS, Store, _stats_over_keys
 
 MASTER_KEY = b"k" * 32
 
@@ -373,7 +373,7 @@ def test_list_deltabrains_for_viewer(store, world):
     [item] = store.list_deltabrains_for_viewer("user_a")
     assert item == {"id": world["db"], "canal_id": world["canal"].id, "query": "모듈러 조립 오류",
                     "created_at": item["created_at"], "is_host": True,
-                    "stats": {"node_count": 4, "edge_count": 3, "emergent_edge_count": 2}}
+                    "stats": {"node_count": 4, "edge_count": 3, "emergent_edge_count": 2, "bridge_node_count": 0}}
     assert store.list_deltabrains_for_viewer("user_c")[0]["is_host"] is False
     assert store.list_deltabrains_for_viewer("user_d") == []
 
@@ -652,8 +652,15 @@ def test_write_transaction_rolls_back_on_refusal(store, world):
 # -- deltabrain stats are computed over the identities a viewer is shown (EXP-1) -----
 
 
+_SUMMARY = "블록 조립 규칙과 오조작 방지 원칙을 한 유닛 접합부에 함께 적용해 잘못 놓인 유닛이 고정되지 않게 하는 설계."
+
+
 def _same_owner_world(store, second_owner: str):
-    """B and B2 (owned by `second_owner`) both cited; edge eb joins a B node to a B2 node."""
+    """B and B2 (owned by `second_owner`) both cited; edge eb joins a B node to a B2 node.
+
+    v.8: new node nbb cites B and B2 (a bridge only when B2's owner is not user_b), new node nab cites the host and
+    B2 (always a bridge, a host bridge). e3 is a self-anchor edge (nbb -> the B node it cites), e0/eq touch the
+    query node; neither kind is ever emergent."""
     for uid, name in [("user_a", "앨리스"), ("user_b", "밥빌더"), ("user_c", "캐럴셀")]:
         store.create_user(name, Tier.PRO, user_id=uid)
     if second_owner not in {"user_a", "user_b", "user_c"}:
@@ -677,19 +684,28 @@ def _same_owner_world(store, second_owner: str):
             {"id": "nb", "kind": "source", "label": "블록 조립 규칙", "provenance": [ref(sb, "b1")]},
             {"id": "nb2", "kind": "source", "label": "오조작 방지", "provenance": [ref(sb2, "b2")]},
             {"id": "nc", "kind": "source", "label": "형태 상보성", "provenance": [ref(sc, "c1")]},
+            {"id": "nbb", "kind": "new", "label": "이중 오조작 방지 접합", "summary": _SUMMARY,
+             "constraints": "위치별 접합 철물 종류가 늘어 제작비가 오른다", "provenance": [ref(sb, "b1"), ref(sb2, "b2")]},
+            {"id": "nab", "kind": "new", "label": "현장 오조작 방지 상세", "summary": _SUMMARY + " 2",
+             "constraints": " … — ", "provenance": [ref(sa, "a2"), ref(sb2, "b1")]},
         ],
         "edges": [
             {"id": "e0", "source": "q", "target": "na", "relation": "requires"},
             {"id": "e1", "source": "nc", "target": "na", "relation": "applies_to", "rationale": "r1"},
             {"id": "eb", "source": "nb", "target": "nb2", "relation": "extends", "rationale": "r2"},
             {"id": "e2", "source": "nb2", "target": "na", "relation": "analogous_to", "rationale": "r3"},
+            {"id": "e3", "source": "nbb", "target": "nb", "relation": "extends", "rationale": "r4"},
+            {"id": "e4", "source": "nab", "target": "nc", "relation": "requires", "rationale": "r5"},
+            {"id": "eq", "source": "q", "target": "nab", "relation": "requires"},
         ],
     })
     same = second_owner == "user_b"
     true_stats = DeltabrainStats(
-        node_count=5, edge_count=4, new_node_count=0,
-        emergent_edge_ids=["e1", "e2"] if same else ["e1", "eb", "e2"],
-        host_touching_emergent_edge_ids=["e1", "e2"], owners_involved=3 if same else 4,
+        node_count=7, edge_count=7, new_node_count=2,
+        emergent_edge_ids=["e1", "e2", "e4"] if same else ["e1", "eb", "e2", "e4"],
+        host_touching_emergent_edge_ids=["e1", "e2", "e4"], owners_involved=3 if same else 4,
+        bridge_node_ids=["nab"] if same else ["nbb", "nab"], host_bridge_node_ids=["nab"],
+        bridges_with_constraints=0 if same else 1,
     )
     db = store.save_deltabrain(canal.id, "user_a", sub, true_stats).id
     store.set_visibility(second_owner, sb2, Visibility.PRIVATE)
@@ -702,17 +718,83 @@ def test_viewer_stats_do_not_reveal_who_a_masked_contributor_is(second_owner):
     try:
         db, true_stats = _same_owner_world(s, second_owner)
         view = s.get_deltabrain_for_viewer("user_c", db)
-        # Same answer whether B2's owner is user_b (plainly shown) or someone else.
-        assert view["stats"] == {"node_count": 5, "edge_count": 4, "new_node_count": 0,
-                                 "emergent_edge_ids": ["e1", "eb", "e2"],
-                                 "host_touching_emergent_edge_ids": ["e1", "e2"], "owners_involved": 4}
+        # Same answer whether B2's owner is user_b (plainly shown) or someone else (v.8 fields included).
+        assert view["stats"] == {"node_count": 7, "edge_count": 7, "new_node_count": 2,
+                                 "emergent_edge_ids": ["e1", "eb", "e2", "e4"],
+                                 "host_touching_emergent_edge_ids": ["e1", "e2", "e4"], "owners_involved": 4,
+                                 "bridge_node_ids": ["nbb", "nab"], "host_bridge_node_ids": ["nab"],
+                                 "bridges_with_constraints": 1}
         assert len(view["contributors"]) == 4
         [listed] = s.list_deltabrains_for_viewer("user_c")
-        assert listed["stats"]["emergent_edge_count"] == 3
+        assert listed["stats"]["emergent_edge_count"] == 4 and listed["stats"]["bridge_node_count"] == 2
         # The stored record keeps the true values.
         assert s.get_deltabrain_record(db).stats == true_stats
         # B2's owner sees B2 plainly, so their stats are the true ones.
         assert s.get_deltabrain_for_viewer(second_owner, db)["stats"] == true_stats.model_dump(mode="json")
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("second_owner", ["user_b", "user_f"])
+def test_masked_host_is_neither_host_touching_nor_a_host_bridge(second_owner):
+    """v.8: a host bridge would reveal that a masked contributor is the host, exactly like a host-touching edge."""
+    s = Store(":memory:", master_key=MASTER_KEY)
+    try:
+        db, _ = _same_owner_world(s, second_owner)
+        canal = s.get_canal_for_viewer("user_a", s.get_deltabrain_record(db).canal_id)
+        s.set_visibility("user_a", canal.host_subbrain_id, Visibility.PRIVATE)
+        stats = s.get_deltabrain_for_viewer("user_c", db)["stats"]
+        # nab (host + B2) is still a bridge: the masked host and the masked B2 owner are separate identities.
+        assert stats["bridge_node_ids"] == ["nbb", "nab"] and stats["host_bridge_node_ids"] == []
+        assert stats["emergent_edge_ids"] == ["e1", "eb", "e2", "e4"]
+        assert stats["host_touching_emergent_edge_ids"] == [] and stats["bridges_with_constraints"] == 1
+    finally:
+        s.close()
+
+
+def test_stats_saved_before_v8_are_recomputed_under_v8_for_every_viewer():
+    """A record saved before Oracle v.8 has no bridge fields and counts query and self-anchor edges as emergent.
+    Viewers get v.8 stats (so bridges can be rated); the record keeps what the host was told."""
+    s = Store(":memory:", master_key=MASTER_KEY)
+    try:
+        db, true_stats = _same_owner_world(s, "user_f")
+        legacy = {"node_count": 7, "edge_count": 7, "new_node_count": 2,
+                  "emergent_edge_ids": ["e1", "eb", "e2", "e3", "e4", "eq"],
+                  "host_touching_emergent_edge_ids": ["e1", "e2", "e4", "eq"], "owners_involved": 4}
+        with s._write_txn():
+            s._conn.execute("UPDATE deltabrains SET stats_json = ? WHERE id = ?", (json.dumps(legacy), db))
+        assert s.get_deltabrain_record(db).stats == DeltabrainStats(**legacy)
+        # user_f owns the private B2, so nothing is masked for them: v.8 stats, equal to the validator's.
+        assert s.get_deltabrain_for_viewer("user_f", db)["stats"] == true_stats.model_dump(mode="json")
+        masked = s.get_deltabrain_for_viewer("user_c", db)["stats"]
+        assert masked["emergent_edge_ids"] == ["e1", "eb", "e2", "e4"] and masked["bridge_node_ids"] == ["nbb", "nab"]
+        [listed] = s.list_deltabrains_for_viewer("user_f")
+        assert listed["stats"]["emergent_edge_count"] == 4 and listed["stats"]["bridge_node_count"] == 2
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("second_owner", ["user_b", "user_f"])
+def test_viewer_stats_rules_match_the_validator_when_nothing_is_masked(second_owner):
+    """The masked-path computation, given every owner plainly, must agree with validator.compute_stats (v.8 §4):
+    viewer stats and the stats the host was told at submission follow one definition."""
+    s = Store(":memory:", master_key=MASTER_KEY)
+    try:
+        db, true_stats = _same_owner_world(s, second_owner)
+        sb2 = next(sb.subbrain_id for sb in s.list_subbrains_for_owner(second_owner) if sb.title == "게임2")
+        s.set_visibility(second_owner, sb2, Visibility.PUBLIC, confirm_hash="hb2")
+        record = s.get_deltabrain_record(db)
+        ctx = s.canal_context(record.canal_id)
+        assert len(ctx.subbrains) == 4
+        expected = validator.compute_stats(record.submission, ctx)
+        with s._lock:
+            keys = s._keys(s._viewer_identities("user_d", db, record.submission))
+        assert all(key[0] == "plain" for key in keys.values())
+        empty = DeltabrainStats(node_count=expected.node_count, edge_count=expected.edge_count,
+                                new_node_count=expected.new_node_count, emergent_edge_ids=[],
+                                host_touching_emergent_edge_ids=[], owners_involved=0)
+        got = _stats_over_keys(record.submission, empty, (ctx.host_subbrain_id, ctx.host_version), keys)
+        assert got == expected == true_stats
     finally:
         s.close()
 

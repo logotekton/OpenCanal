@@ -3,7 +3,8 @@
 - T06 NEVER-06: the MCP `initialize` result (server instructions) must not name a hidden tool.
 - T25 NEVER-09: a VALIDATION_FAILED envelope keeps other users' strings inside untrusted_data.
 - T81 MUST-Q7: the templated share is computed over EMERGENT edges only; rationales on
-  non-emergent edges must not dilute it.
+  non-emergent edges must not dilute it. (Oracle v.8: over rating units = bridge summaries + emergent edge
+  rationales; query and self-anchor edges are not units and still must not dilute it.)
 
 Written from the Oracle text by the Oracle-owner proxy (planner), not by a Builder.
 """
@@ -74,13 +75,15 @@ def test_never_09_v4_validation_failed_keeps_foreign_strings_in_untrusted_data(t
 def test_must_q7_v4_templated_share_counts_emergent_edges_only(ctx, cfg):
     g = load_delta("good-01")
     edges = {e["id"]: e for e in g["edges"]}
-    emergent = ["e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10"]
+    # ORACLE v.8 §4: units = bridges n1, n2 + emergent e3, e4, e9, e10. e1/e2 are query edges, e5-e8 self-anchor
+    # edges (was v.7: emergent e3-e10, non-emergent e1/e2 only).
+    emergent = ["e3", "e4", "e9", "e10"]
     non_emergent = [eid for eid in edges if eid not in emergent]
-    assert non_emergent, "good-01 must have non-emergent (query) edges for this test"
+    assert set(non_emergent) == {"e1", "e2", "e5", "e6", "e7", "e8"}, "query + self-anchor edges"
     shared = "같은 틀 문장을 두 창발 엣지에 그대로 붙였다. 결합 방식이 다른데도 이유를 구분하지 않아 무엇이 새로운지 알 수 없다."
     edges["e3"]["rationale"] = shared
-    edges["e4"]["rationale"] = shared  # 2 of 8 emergent = 25% > 20% -> TEMPLATED_RATIONALE
-    for i, eid in enumerate(non_emergent):  # distinct rationales on non-emergent edges must not dilute the share
+    edges["e4"]["rationale"] = shared  # 2 of 6 units = 33% > 20% (v.7: 2 of 8 emergent) -> TEMPLATED_RATIONALE
+    for i, eid in enumerate(non_emergent):  # distinct rationales on non-unit edges must not dilute it (2/12 would be ok)
         edges[eid]["rationale"] = f"질의와 앵커를 잇는 맥락 엣지 {i}번이며 서로 다른 설명을 달아 비율을 낮추려는 시도다. 고유 번호 {i * 7 + 3}."
     result = run_validator(g, ctx, cfg)
     assert "TEMPLATED_RATIONALE" in violation_codes(result), [v.code for v in result.violations]

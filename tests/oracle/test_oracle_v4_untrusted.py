@@ -107,11 +107,15 @@ def _free_responses(world: World) -> list[tuple[str, dict[str, Any]]]:
     call("db_get member", "user_b", "deltabrain_get", deltabrain_id=db_id)
     call("db_get NOT_FOUND", "user_d", "deltabrain_get", deltabrain_id=db_id)
     call("db_list", "user_b", "deltabrain_list")
-    call("rate ok", "user_b", "deltabrain_rate", deltabrain_id=db_id, edge_id="e3", novelty=1, validity=1, usefulness=1)
-    call("rate NOT_EMERGENT_EDGE", "user_b", "deltabrain_rate", deltabrain_id=db_id, edge_id="e1", novelty=1, validity=1, usefulness=1)
-    call("rate INVALID_ARGUMENT", "user_b", "deltabrain_rate", deltabrain_id=db_id, edge_id="e3", novelty=2, validity=1, usefulness=1)
-    call("rate unknown edge", "user_b", "deltabrain_rate", deltabrain_id=db_id, edge_id="e404", novelty=1, validity=1, usefulness=1)
-    call("rate NOT_FOUND", "user_d", "deltabrain_rate", deltabrain_id=db_id, edge_id="e3", novelty=1, validity=1, usefulness=1)
+    # Oracle v.8 / TASK §5: `target_id` (bridge node or emergent edge), otherwise NOT_RATEABLE (was edge_id /
+    # NOT_EMERGENT_EDGE).
+    call("rate ok", "user_b", "deltabrain_rate", deltabrain_id=db_id, target_id="e3", novelty=1, validity=1, usefulness=1)
+    call("rate bridge ok", "user_b", "deltabrain_rate", deltabrain_id=db_id, target_id="n1", novelty=1, validity=1, usefulness=1)
+    call("rate NOT_RATEABLE", "user_b", "deltabrain_rate", deltabrain_id=db_id, target_id="e1", novelty=1, validity=1, usefulness=1)
+    call("rate NOT_RATEABLE self-anchor", "user_b", "deltabrain_rate", deltabrain_id=db_id, target_id="e5", novelty=1, validity=1, usefulness=1)
+    call("rate INVALID_ARGUMENT", "user_b", "deltabrain_rate", deltabrain_id=db_id, target_id="e3", novelty=2, validity=1, usefulness=1)
+    call("rate unknown edge", "user_b", "deltabrain_rate", deltabrain_id=db_id, target_id="e404", novelty=1, validity=1, usefulness=1)
+    call("rate NOT_FOUND", "user_d", "deltabrain_rate", deltabrain_id=db_id, target_id="e3", novelty=1, validity=1, usefulness=1)
     # host switched private -> HOST_NOT_PUBLIC on submit
     assert_ok(world.make_private("A"))
     call("submit HOST_NOT_PUBLIC", "user_a", "canal_submit", canal_id=canal_id, deltabrain=world.good01())
@@ -136,7 +140,7 @@ def test_never_06_v4_no_free_response_names_a_hidden_tool(world: World):
         "HOST_NOT_PUBLIC",
         "VALIDATION_FAILED",
         "NOT_CANAL_HOST",
-        "NOT_EMERGENT_EDGE",
+        "NOT_RATEABLE",
         "INVALID_ARGUMENT",
         "UNKNOWN_TOOL",
         "UNAUTHORIZED",
@@ -255,7 +259,7 @@ def q01_flow(seeded: World) -> dict[str, Any]:
     """Q-01 canal hosted by A (members A2, B, C), good-01 accepted, one rating by the host."""
     canal = assert_ok(seeded.open_canal(query=Q01))
     sub = assert_ok(seeded.submit(canal["canal_id"], seeded.good01()))
-    assert_ok(seeded.call("user_a", "deltabrain_rate", deltabrain_id=sub["deltabrain_id"], edge_id="e3", novelty=1, validity=1, usefulness=1))
+    assert_ok(seeded.call("user_a", "deltabrain_rate", deltabrain_id=sub["deltabrain_id"], target_id="e3", novelty=1, validity=1, usefulness=1))
     return {"world": seeded, "canal": canal, "canal_id": canal["canal_id"], "db_id": sub["deltabrain_id"]}
 
 

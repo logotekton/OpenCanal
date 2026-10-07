@@ -1,4 +1,5 @@
-"""Unit tests for the synthesis protocol text served by canal_open (ORACLE §4, §5.1, v.3/v.4 definitions).
+"""Unit tests for the synthesis protocol text served by canal_open (ORACLE §4, §5.1; v.3/v.4 definitions that
+still hold in v.8). The v.8 bridge, emergence, summary and constraints wording is in test_unit_protocol_v8.py.
 
 The rules and instructions are read by the synthesizing LLM as the acceptance criteria, so they must state
 the definitions the validator actually applies.

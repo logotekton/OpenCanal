@@ -12,7 +12,7 @@ import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 import pytest
 
@@ -108,11 +108,15 @@ def _good01(sids: dict[str, str]) -> dict[str, Any]:
     return delta
 
 
-def _same_owner_canal(second_owner: str) -> dict[str, Any]:
+def _same_owner_canal(
+    second_owner: str, *, cite_b2: bool = True, before_hide: Optional[Callable[[dict[str, Any]], None]] = None
+) -> dict[str, Any]:
     """The EXP-1 reproduction: B and B2 sit in one canal, an edge joins them, then B2 goes private.
 
     B2 is owned by user_b (the owner of the plainly shown B) or by user_f. A participant who sees B2 masked must
-    not be able to tell which (ORACLE v.4 NEVER-11)."""
+    not be able to tell which (ORACLE v.4 NEVER-11). With cite_b2=False the deltabrain is plain good-01: B2 is
+    then a canal member that no node cites, withheld in canal_get only. `before_hide` runs (with the world dict)
+    after the submission and before B2 goes private."""
     store = Store(":memory:", master_key=os.urandom(32))
     svc = Service(store, load_config())
     users: dict[str, User] = {}
@@ -130,18 +134,34 @@ def _same_owner_canal(second_owner: str) -> dict[str, Any]:
     assert opened["ok"], opened
     assert {m["subbrain_id"] for m in opened["members"]} == {sids["B"], sids["B2"], sids["C"]}
     delta = _good01(sids)
-    delta["nodes"].append({"id": "s-b2", "kind": "source", "label": "오조작 방지 설계",
-                           "provenance": [{"subbrain_id": sids["B2"], "version": 1, "node_id": "b-n3"}]})
-    delta["edges"].append({
-        "id": "e11", "source": "s-b1", "target": "s-b2", "relation": "extends",
-        "rationale": "잘못 놓을 수 없는 모양은 오조작 방지 설계를 블록 형상 하나로 구체화한 사례라서 둘을 같은 원칙의 단계로 본다.",
-    })
+    if cite_b2:
+        delta["nodes"].append({"id": "s-b2", "kind": "source", "label": "오조작 방지 설계",
+                               "provenance": [{"subbrain_id": sids["B2"], "version": 1, "node_id": "b-n3"}]})
+        delta["edges"].append({
+            "id": "e11", "source": "s-b1", "target": "s-b2", "relation": "extends",
+            "rationale": "잘못 놓을 수 없는 모양은 오조작 방지 설계를 블록 형상 하나로 구체화한 사례라서 둘을 같은 원칙의 단계로 본다.",
+        })
+        # v.8: n-bb cites B and B2, so it is a bridge only when B2's owner is not user_b.
+        delta["nodes"].append({
+            "id": "n-bb", "kind": "new", "label": "형상과 순서의 이중 잠금",
+            "summary": "블록 모양으로 자리를 한정하고 설치 순서 제약으로 한 번 더 걸러, 두 단계 중 하나만 맞아도 놓이지 않게 하는 접합 원칙.",
+            "provenance": [{"subbrain_id": sids["B"], "version": 1, "node_id": "b-n2"},
+                           {"subbrain_id": sids["B2"], "version": 1, "node_id": "b-n3"}],
+        })
+        delta["edges"].append({
+            "id": "e12", "source": "n-bb", "target": "s-a2", "relation": "applies_to",
+            "rationale": "접합부 상세에 형상 키와 설치 순서 키를 함께 두면 같은 모양의 유닛이라도 순서가 틀리면 플레이트에 고정되지 않는다.",
+        })
     sub = svc.dispatch(users["user_a"], "canal_submit", {"canal_id": opened["canal_id"], "deltabrain": delta})
     assert sub["ok"], sub
+    world = {"store": store, "svc": svc, "users": users, "sids": sids, "canal_id": opened["canal_id"],
+             "db": sub["deltabrain_id"], "submitted_stats": sub["stats"],
+             "ids": [n["id"] for n in delta["nodes"]] + [e["id"] for e in delta["edges"]]}
+    if before_hide is not None:
+        before_hide(world)
     hidden = svc.dispatch(users[second_owner], "subbrain_set_visibility", {"subbrain_id": sids["B2"], "visibility": "private"})
     assert hidden["ok"], hidden
-    return {"store": store, "svc": svc, "users": users, "sids": sids, "canal_id": opened["canal_id"],
-            "db": sub["deltabrain_id"], "submitted_stats": sub["stats"]}
+    return world
 
 
 def _normalized(obj: Any, world: dict[str, Any]) -> str:
@@ -161,9 +181,13 @@ def test_masked_contributor_cannot_be_reidentified_from_stats_or_rating() -> Non
         svc, viewer = world["svc"], world["users"]["user_c"]
         rate = {"deltabrain_id": world["db"], "novelty": 1, "validity": 1, "usefulness": 1}
         responses = {
-            "rate_e11": svc.dispatch(viewer, "deltabrain_rate", {**rate, "edge_id": "e11"}),
-            "rate_e1": svc.dispatch(viewer, "deltabrain_rate", {**rate, "edge_id": "e1"}),
-            "rate_unknown": svc.dispatch(viewer, "deltabrain_rate", {**rate, "edge_id": "e99"}),
+            "rate_e11": svc.dispatch(viewer, "deltabrain_rate", {**rate, "target_id": "e11"}),
+            "rate_n1": svc.dispatch(viewer, "deltabrain_rate", {**rate, "target_id": "n1"}),
+            "rate_n_bb": svc.dispatch(viewer, "deltabrain_rate", {**rate, "target_id": "n-bb"}),
+            "rate_e1": svc.dispatch(viewer, "deltabrain_rate", {**rate, "target_id": "e1"}),
+            "rate_e5": svc.dispatch(viewer, "deltabrain_rate", {**rate, "target_id": "e5"}),
+            "rate_s_b2": svc.dispatch(viewer, "deltabrain_rate", {**rate, "target_id": "s-b2"}),
+            "rate_unknown": svc.dispatch(viewer, "deltabrain_rate", {**rate, "target_id": "e99"}),
             "get": svc.dispatch(viewer, "deltabrain_get", {"deltabrain_id": world["db"]}),
             "list": svc.dispatch(viewer, "deltabrain_list", {}),
         }
@@ -172,18 +196,96 @@ def test_masked_contributor_cannot_be_reidentified_from_stats_or_rating() -> Non
         seen[second_owner] = {k: _normalized(v, world) for k, v in responses.items()}
 
         get = responses["get"]
-        assert responses["rate_e11"]["ok"] and responses["rate_e1"]["error"]["code"] == "NOT_EMERGENT_EDGE"
-        assert responses["rate_unknown"]["error"]["code"] == "NOT_FOUND"
-        assert get["stats"]["owners_involved"] == 4 and get["stats"]["emergent_edge_count"] == 9
-        assert "e11" in get["untrusted_data"]["deltabrain"]["stats"]["emergent_edge_ids"]
+        assert responses["rate_e11"]["ok"] and responses["rate_n1"]["ok"] and responses["rate_n_bb"]["ok"]
+        # v.8: a query edge (e1), a self-anchor edge (e5) and a source node are not rating units.
+        for key in ("rate_e1", "rate_e5", "rate_s_b2"):
+            assert responses[key]["error"]["code"] == "NOT_RATEABLE", key
+        assert responses["rate_unknown"]["error"]["code"] == "NOT_RATEABLE"  # ORACLE §9 v.8 "아니면 NOT_RATEABLE"
+        # good-01 under v.8: emergent e3, e4, e9, e10 (e1/e2 query, e5-e8 self-anchor), plus e12 and, in the
+        # masked view, e11; bridges n1, n2 (both citing the host) and, in the masked view, n-bb.
+        view_stats = get["untrusted_data"]["deltabrain"]["stats"]
+        assert view_stats["emergent_edge_ids"] == ["e3", "e4", "e9", "e10", "e11", "e12"]
+        assert view_stats["bridge_node_ids"] == ["n1", "n2", "n-bb"] and view_stats["host_bridge_node_ids"] == ["n1", "n2"]
+        assert get["stats"]["owners_involved"] == 4 and get["stats"]["emergent_edge_count"] == 6
+        assert get["stats"]["bridge_node_count"] == 3 and get["stats"]["host_bridge_node_count"] == 2
+        assert get["rating_summary"] == {"rating_unit_count": 9, "bridge_node_count": 3, "emergent_edge_count": 6,
+                                         "rated_unit_count": 3, "quality": 1.0}
         if second_owner == "user_f":  # user_b is plainly shown as B's owner in both worlds
             assert "user_f" not in json.dumps(responses) and "Fiona Choi" not in json.dumps(responses)
         # The stored stats keep the true values (what the host was told at submission).
         record = world["store"].get_deltabrain_record(world["db"])
         assert record.stats.model_dump(mode="json") == world["submitted_stats"]
         assert ("e11" in record.stats.emergent_edge_ids) is (second_owner != "user_b")
+        assert ("n-bb" in record.stats.bridge_node_ids) is (second_owner != "user_b")
     for key in seen["user_b"]:
         assert seen["user_b"][key] == seen["user_f"][key], key
+
+
+def _rate_each(world: dict[str, Any], user_id: str, targets: list[str], labels: tuple[int, int, int] = (1, 1, 1)) -> None:
+    """Rate each target as user_id; ids that are not rating units in that rater's view answer NOT_RATEABLE."""
+    n, v, u = labels
+    for target in targets:
+        world["svc"].dispatch(world["users"][user_id], "deltabrain_rate", {
+            "deltabrain_id": world["db"], "target_id": target, "novelty": n, "validity": v, "usefulness": u,
+        })
+
+
+def _apply_rating_policy(policy: str, world: dict[str, Any], masked_owner: str) -> None:
+    """The same rating behaviour in both worlds; each one stores different rows in the two worlds."""
+    if policy in ("masked_owner_after", "masked_owner_before"):
+        # As user_b, B2's owner cannot rate n-bb or e11: B and B2 are one plain owner in its own view.
+        _rate_each(world, masked_owner, world["ids"])
+    elif policy in ("everyone_one_bridge", "uncited_everyone_one_bridge"):
+        # n1 is a bridge for everybody; one row per participant, and there is one more participant with user_f.
+        for user_id in sorted(world["users"]):
+            _rate_each(world, user_id, ["n1"])
+    elif policy == "quality_split":
+        _rate_each(world, "user_c", world["ids"])
+        _rate_each(world, masked_owner, world["ids"], (0, 0, 0))
+    else:
+        raise AssertionError(policy)
+
+
+@pytest.mark.parametrize(
+    "policy",
+    ["masked_owner_after", "masked_owner_before", "everyone_one_bridge", "quality_split", "uncited_everyone_one_bridge"],
+)
+def test_other_participants_ratings_do_not_reidentify_a_masked_contributor(policy: str) -> None:
+    """N11-V8-RATE-1/2 (ORACLE v.4 NEVER-11 "평가 응답", HUMAN-01 v.8 rating units).
+
+    Other raters' rows are written under each rater's own view, and their count bounds the number of distinct
+    participants. Aggregated for a viewer from whom B2 is withheld, they told whether B2's owner is user_b
+    (rated_unit_count 9 vs 6, raters 4 vs 3, quality 0.0 vs 0.33 in the adversarial reproduction). Once anything
+    is withheld from the viewer, deltabrain_get counts only the viewer's own ratings; B2's owner, from whom
+    nothing is withheld, still sees everyone's."""
+    seen: dict[str, dict[str, str]] = {}
+    stored: dict[str, set[tuple[str, str, int]]] = {}
+    for second_owner in ("user_b", "user_f"):
+        hook = None
+        if policy == "masked_owner_before":
+            def hook(w: dict[str, Any], owner: str = second_owner) -> None:
+                _apply_rating_policy(policy, w, owner)
+        world = _same_owner_canal(second_owner, cite_b2=not policy.startswith("uncited"), before_hide=hook)
+        if hook is None:
+            _apply_rating_policy(policy, world, second_owner)
+        svc, db = world["svc"], world["db"]
+        stored[second_owner] = {
+            (r.edge_id, "<B2 owner>" if r.rater_id == second_owner else r.rater_id, r.novelty)
+            for r in world["store"].ratings_for(db)
+        }
+        seen[second_owner] = {}
+        for viewer in ("user_a", "user_c"):
+            got = svc.dispatch(world["users"][viewer], "deltabrain_get", {"deltabrain_id": db})
+            assert got["ok"], got
+            ratings = got["untrusted_data"]["ratings"]
+            assert ratings["scope"] == "own" and all(unit["raters"] == 1 for unit in ratings["units"]), ratings
+            assert [u["target_id"] for u in ratings["units"]] == [m["target_id"] for m in ratings["mine"]]
+            seen[second_owner][viewer] = _normalized(got, world)
+        owner_view = svc.dispatch(world["users"][second_owner], "deltabrain_get", {"deltabrain_id": db})
+        assert owner_view["untrusted_data"]["ratings"]["scope"] == "all", "nothing is withheld from B2's owner"
+    assert stored["user_b"] != stored["user_f"], "self-check: the stored ratings differ between the worlds"
+    for viewer in ("user_a", "user_c"):
+        assert seen["user_b"][viewer] == seen["user_f"][viewer], viewer
 
 
 def test_canal_get_withholds_a_host_that_went_private() -> None:
@@ -231,7 +333,7 @@ def test_edge_ids_and_display_names_stay_inside_untrusted_data() -> None:
             edge["id"] = evil
     sub = svc.dispatch(host_user, "canal_submit", {"canal_id": opened["canal_id"], "deltabrain": delta})
     assert sub["ok"], sub
-    rate = {"deltabrain_id": sub["deltabrain_id"], "edge_id": evil, "novelty": 1, "validity": 1, "usefulness": 1}
+    rate = {"deltabrain_id": sub["deltabrain_id"], "target_id": evil, "novelty": 1, "validity": 1, "usefulness": 1}
     assert svc.dispatch(host_user, "deltabrain_rate", rate)["ok"]
 
     def outside(env: Any, needle: str, path: tuple = ()) -> list[tuple]:

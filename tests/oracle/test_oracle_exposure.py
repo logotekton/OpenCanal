@@ -321,7 +321,7 @@ def test_never_05_non_participant_gets_not_found_for_canal_and_deltabrain(seeded
             seeded.call(outsider, "deltabrain_get", deltabrain_id=fake_db),
             fake_db,
         )
-        rate = dict(edge_id=edge, novelty=1, validity=1, usefulness=1)
+        rate = dict(target_id=edge, novelty=1, validity=1, usefulness=1)  # Oracle v.8 / TASK §5 (was edge_id)
         assert_same_not_found(
             seeded.call(outsider, "deltabrain_rate", deltabrain_id=db_id, **rate),
             db_id,

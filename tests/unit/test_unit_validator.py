@@ -1,7 +1,8 @@
-"""Unit tests for the L1 deltabrain validator (ORACLE §4, §5.1).
+"""Unit tests for the L1 deltabrain validator (ORACLE §4, §5.1; v.8 bridges and emergent edges).
 
 The canal context is built by hand: host A (user_a) plus members B (user_b, two
 subbrains) and C (user_c). Fixture files are not used here; tests/oracle/ covers them.
+v.8-only rules (self-anchor edges, bridge summaries, unit pool of MUST-Q7) are in test_unit_validator_v8.py.
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ JOSA = ["에서는", "으로", "에서", "의", "을", "를", "이", "가", "은
 R1 = "단백질이 모양이 맞을 때만 결합하듯, 접합부를 비대칭 형상으로 만들면 잘못된 방향의 조립이 물리적으로 불가능해진다"
 R2 = "게임에서 블록 모양이 놓일 자리를 하나로 정하듯 접합부 상세도 맞는 부재 하나만 받아들이도록 형상을 정할 수 있다"
 R3 = "블록 모양 규칙과 접합부 상세를 합치면 현장 작업자가 도면 없이도 맞는 위치를 알 수 있는 키잉 방식이 나온다"
+# v.8 MUST-Q4: every bridge node (new node citing >= 2 owners) needs a 40-600 normalized-char summary.
+S1 = "접합부마다 위치별로 다른 돌기와 홈을 두어 맞는 자리가 아니면 유닛이 플레이트에 안착하지 않게 하는 상세"
 
 
 def _subbrain(subbrain_id, version, owner, nodes, edges=()):
@@ -85,8 +88,16 @@ B1, X1 = ref("sb_b", 2, "b1"), ref("sb_b2", 1, "x1")
 C1, C2 = ref("sb_c", 1, "c1"), ref("sb_c", 1, "c2")
 
 
-def node(node_id, kind, label, *refs):
-    return {"id": node_id, "kind": kind, "label": label, "provenance": list(refs)}
+def node(node_id, kind, label, *refs, summary=None):
+    out = {"id": node_id, "kind": kind, "label": label, "provenance": list(refs)}
+    if summary is not None:
+        out["summary"] = summary
+    return out
+
+
+def summary_for(tag):
+    """A distinct in-range bridge summary (v.8 MUST-Q4), so bridges added by a test never trip MUST-Q7."""
+    return f"{tag}: 단백질 오류 교정처럼 조립 단계마다 형상 검사를 넣어 잘못 놓인 유닛을 고정 전에 빼내는 절차 {tag}"
 
 
 def edge(edge_id, source, target, relation="requires", rationale=None, *refs):
@@ -103,14 +114,15 @@ VALID = {
         node("sa2", "source", "접합부 상세", A2),
         node("sc1", "source", "형태 상보성", C1),
         node("sb1", "source", "잘못 놓을 수 없는 블록 모양", B1),
-        node("n1", "new", "모양으로 강제되는 접합부 키잉", B1, A2),
+        node("n1", "new", "모양으로 강제되는 접합부 키잉", B1, A2, summary=S1),  # host bridge (user_b + user_a)
     ],
     "edges": [
         edge("e0", "q", "sa1", "requires"),
         edge("e_ctx", "q", "sa2", "requires"),  # non-emergent context edge (Oracle v.3: copying an input edge would be NOT_NOVEL)
         edge("e1", "sc1", "sa1", "applies_to", R1),
         edge("e2", "sb1", "sa2", "analogous_to", R2),
-        edge("e3", "n1", "sa2", "extends", R3),
+        edge("e3", "n1", "sa1", "extends", R3),  # n1 does not cite A1: emergent
+        edge("e_anchor", "n1", "sb1", "extends"),  # v.8 self-anchor (n1 already cites B1): not emergent, no rationale
     ],
 }
 
@@ -146,10 +158,13 @@ def test_valid_submission_is_accepted_with_stats():
     assert result.violations == []
     stats = result.stats
     assert stats is not None
-    assert (stats.node_count, stats.edge_count, stats.new_node_count) == (6, 5, 1)
-    assert stats.emergent_edge_ids == ["e1", "e2", "e3"]
+    assert (stats.node_count, stats.edge_count, stats.new_node_count) == (6, 6, 1)
+    assert stats.emergent_edge_ids == ["e1", "e2", "e3"]  # not e0/e_ctx (query edges) nor e_anchor (self-anchor)
     assert stats.host_touching_emergent_edge_ids == ["e1", "e2", "e3"]
     assert stats.owners_involved == 3
+    assert stats.bridge_node_ids == ["n1"]
+    assert stats.host_bridge_node_ids == ["n1"]
+    assert stats.bridges_with_constraints == 0
 
 
 def test_model_and_dict_payloads_give_the_same_result():
@@ -167,18 +182,19 @@ def test_compute_stats_tolerates_dangling_edges():
     payload = fresh()
     payload["edges"].append(edge("e_bad", "sa1", "ghost", "requires"))
     stats = compute_stats(DeltabrainSubmission.model_validate(payload), CTX)
-    assert stats.edge_count == 6
+    assert stats.edge_count == 7
     assert "e_bad" not in stats.emergent_edge_ids
 
 
 def test_new_node_citing_two_nodes_of_the_same_owner_is_allowed():
-    # Q1 needs >= 2 refs, not 2 owners; emergence is decided per edge.
+    # Q1 needs >= 2 refs, not 2 owners. One owner is not a bridge, so no summary is required either (v.8).
     payload = fresh()
     payload["nodes"].append(node("n2", "new", "튜토리얼식 블록 배치 학습", B1, X1))
     payload["edges"].append(edge("e4", "q", "n2", "requires"))
     result = run(payload)
     assert result.ok, result.violations
     assert "e4" not in result.stats.emergent_edge_ids
+    assert "n2" not in result.stats.bridge_node_ids
 
 
 def test_edge_own_provenance_does_not_make_it_emergent():
@@ -278,7 +294,7 @@ def test_size_at_limit_is_fine():
     payload = fresh()
     for i in range(54):
         payload["nodes"].append(node(f"s{i}", "source", "공차 관리", A3))
-    for i in range(115):
+    for i in range(114):
         payload["edges"].append(edge(f"x{i}", "q", f"s{i % 54}"))
     assert (len(payload["nodes"]), len(payload["edges"])) == (60, 120)
     assert run(payload).ok
@@ -328,9 +344,10 @@ def test_query_node_refs_do_not_create_emergence():
 def test_off_query_nodes_far_and_disconnected():
     payload = fresh()
     # sb1 sits 2 hops from q (q -> sa2 -> sb1), so n_mid is at 3 hops and n_far at 4.
-    payload["nodes"].append(node("n_mid", "new", "형상 키 기반 조립 순서 검증", C2, A3))
-    payload["nodes"].append(node("n_far", "new", "오류 교정 루프 기반 공차 흡수", C2, A3))
-    payload["nodes"].append(node("n_iso", "new", "자기 교정 접합 순서", C2, A3))
+    # All three are host bridges (user_c + user_a), so each carries its own summary (v.8 MUST-Q4).
+    payload["nodes"].append(node("n_mid", "new", "형상 키 기반 조립 순서 검증", C2, A3, summary=summary_for("mid")))
+    payload["nodes"].append(node("n_far", "new", "오류 교정 루프 기반 공차 흡수", C2, A3, summary=summary_for("far")))
+    payload["nodes"].append(node("n_iso", "new", "자기 교정 접합 순서", C2, A3, summary=summary_for("iso")))
     payload["edges"].append(edge("e4", "sb1", "n_mid", "extends", R3 + " 그리고 순서 검증을 더한다"))
     payload["edges"].append(edge("e5", "n_mid", "n_far", "extends", R1 + " 여기에 교정 루프를 붙인다"))
     result = run(payload)
@@ -523,13 +540,34 @@ def test_edge_refs_suggested_by_v2_wording_do_not_clear_the_violation():
 
 
 def test_following_the_emergence_message_clears_it():
-    # "connect a new node that cites nodes of both owners (host + member)" fixes both violations.
+    # v.8: "add a new node (a host bridge) citing a host node and another owner's node, with a summary" fixes both.
     for payload in (_single_owner_payload(), _host_skipping_payload()):
-        payload["nodes"].append(node("n_fix", "new", "모양으로 강제되는 접합부 키잉", A2, B1))
+        payload["nodes"].append(node("n_fix", "new", "모양으로 강제되는 접합부 키잉", A2, B1, summary=S1))
         payload["edges"].append(edge("e_fix", "n_fix", payload["edges"][0]["target"], "applies_to", R3))
         result = run(payload)
         assert result.ok, result.violations
-        assert "e_fix" in result.stats.host_touching_emergent_edge_ids
+        assert result.stats.host_bridge_node_ids == ["n_fix"]
+    # Into sa1 (cites A1, which n_fix does not cite) the edge is emergent and touches the host; into sb1 it is a
+    # self-anchor edge (n_fix already cites B1), so the host bridge alone satisfies MUST-Q3.
+    single = _single_owner_payload()
+    single["nodes"].append(node("n_fix", "new", "모양으로 강제되는 접합부 키잉", A2, B1, summary=S1))
+    single["edges"].append(edge("e_fix", "n_fix", "sa1", "applies_to", R3))
+    assert run(single).stats.host_touching_emergent_edge_ids == ["e_fix"]
+    skipping = _host_skipping_payload()
+    skipping["nodes"].append(node("n_fix", "new", "모양으로 강제되는 접합부 키잉", A2, B1, summary=S1))
+    skipping["edges"].append(edge("e_fix", "n_fix", "sb1", "applies_to", R3))
+    assert run(skipping).stats.host_touching_emergent_edge_ids == []
+
+
+@pytest.mark.parametrize("make", [_single_owner_payload, _host_skipping_payload])
+def test_following_the_emergence_message_without_a_summary_is_rationale_missing(make):
+    # The message names the summary requirement because a bridge without one is still rejected (MUST-Q4).
+    payload = make()
+    payload["nodes"].append(node("n_fix", "new", "모양으로 강제되는 접합부 키잉", A2, B1))
+    payload["edges"].append(edge("e_fix", "n_fix", payload["edges"][0]["target"], "applies_to", R3))
+    result = run(payload)
+    assert codes(result) == [ViolationCode.RATIONALE_MISSING]
+    assert result.violations[0].node_id == "n_fix" and result.violations[0].edge_id is None
 
 
 def test_copied_input_edge_message_covers_non_emergent_edges():

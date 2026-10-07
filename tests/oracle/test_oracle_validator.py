@@ -13,10 +13,13 @@ import pytest
 
 from opencanal.models import ALLOWED_RELATIONS, DeltabrainSubmission
 
+from ._v8 import analyse
 from .conftest import dumps, load_delta, run_validator, violation_codes
 
-GOOD_EMERGENT = {"e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10"}
+# ORACLE v.8 §4: e1/e2 (query edges) and e5-e8 (self-anchor edges) are not emergent. Was (v.7): e3-e10.
+GOOD_EMERGENT = {"e3", "e4", "e9", "e10"}
 GOOD_HOST_TOUCHING = GOOD_EMERGENT - {"e9"}
+GOOD_BRIDGES = {"n1", "n2"}
 
 
 def _ref(sb: str, node: str, version: int = 1) -> dict:
@@ -132,20 +135,39 @@ def mut_mixed_generic_label() -> dict:
 
 
 def mut_templated_at_limit() -> dict:
-    """10 emergent edges, exactly one pair shares a rationale -> 2/10 = 20% (allowed: '20% 이하')."""
+    """10 rating units, exactly one pair shares a description -> 2/10 = 20% (allowed: '20% 이하').
+
+    ORACLE v.8 MUST-Q7: the share is over units = bridges (n1, n2) + emergent edges. good-01 has 2 + 4; four more
+    cross-subbrain emergent edges make 10. e12 repeats e3's rationale; both have s-a1 as an endpoint, so they are
+    identical with or without the v.4 endpoint-label substitution. (Was v.7: 10 emergent edges with e12 = e10's text,
+    which the label substitution actually made different.)
+    """
     g = load_delta("good-01")
-    g["edges"].append(
-        {
-            "id": "e11",
-            "source": "s-c2",
-            "target": "s-a1",
-            "relation": "explains",
-            "rationale": "결합 에너지가 낮은 잘못된 결합이 저절로 풀리는 교정 기제는, 틀린 위치에 놓인 유닛을 고정 전에 빼내는 현장 절차의 근거가 된다.",
-        }
-    )
-    g["edges"].append(
-        {"id": "e12", "source": "s-b1", "target": "s-a1", "relation": "applies_to", "rationale": _edge(g, "e10")["rationale"]}
-    )
+    for eid, src, tgt, rel, rationale in (
+        (
+            "e11",
+            "s-c2",
+            "s-a1",
+            "explains",
+            "결합 에너지가 낮은 잘못된 결합이 저절로 풀리는 교정 기제는, 틀린 위치에 놓인 유닛을 고정 전에 빼내는 현장 절차의 근거가 된다.",
+        ),
+        ("e12", "s-b1", "s-a1", "applies_to", _edge(g, "e3")["rationale"]),
+        (
+            "e13",
+            "s-c2",
+            "s-b1",
+            "explains",
+            "약하게 붙은 틀린 짝이 저절로 떨어져 나가는 세포의 방식은, 게임에서 틀린 조합이 화면에 남지 않도록 막는 규칙이 왜 실수를 줄이는지 보여 준다.",
+        ),
+        (
+            "e14",
+            "s-c1",
+            "s-a3",
+            "requires",
+            "맞물리는 표면끼리만 붙게 하려면 돌기와 홈의 치수가 제작 오차보다 넉넉해야 한다. 허용 오차를 단계별로 나눠 주지 않으면 맞는 유닛도 들어가지 않는다.",
+        ),
+    ):
+        g["edges"].append({"id": eid, "source": src, "target": tgt, "relation": rel, "rationale": rationale})
     return g
 
 
@@ -202,6 +224,8 @@ def test_must_q_good01_accepted_with_g1_g2_and_exact_stats(ctx, cfg):
     assert stats.new_node_count == 2
     assert set(stats.emergent_edge_ids) == GOOD_EMERGENT
     assert set(stats.host_touching_emergent_edge_ids) == GOOD_HOST_TOUCHING
+    assert set(stats.bridge_node_ids) == set(stats.host_bridge_node_ids) == GOOD_BRIDGES  # v.8
+    assert stats.bridges_with_constraints == 0  # v.8
     assert stats.owners_involved == 3
 
 
@@ -339,7 +363,9 @@ def test_must_q3_single_owner_graph_is_no_emergence(ctx, cfg):
 
 
 def test_must_q3_member_only_bridges_are_host_not_touched(ctx, cfg):
-    _check(load_delta("bad-host-untouched"), ctx, cfg, {"HOST_NOT_TOUCHED"})
+    # ORACLE v.8 MUST-Q4 "다리 노드에는 summary(정규화 후 40~600자)": the file's only bridge n-bc has a 27-char summary,
+    # so RATIONALE_MISSING (node n-bc) legitimately co-fires. Pinned exactly in test_oracle_v8_validator.py.
+    _check(load_delta("bad-host-untouched"), ctx, cfg, {"HOST_NOT_TOUCHED"}, tolerated={"RATIONALE_MISSING"})
 
 
 # ---------------------------------------------------------------------------
@@ -404,13 +430,26 @@ def test_must_q6_generic_word_mixed_with_specific_words_is_allowed(ctx, cfg):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Superseded by Oracle v.8 (reported to the owner): §6.4 still says bad-templated.json -> TEMPLATED_RATIONALE, "
+        "but MUST-Q7 v.8 counts units (bridge summaries + emergent edges) and the file's template sits on e5/e6/e7 "
+        "(self-anchor edges, §4 v.8) plus e10 only -> 0/6 duplicates. A v.8 validator accepts the file; a validator "
+        "that still counts self-anchor edges XPASSes. The v.8 golden is bad-templated-02.json "
+        "(test_oracle_v8_validator.py::test_v8_q7_bad_templated_02_is_templated)."
+    ),
+)
 def test_must_q7_templated_rationale(ctx, cfg):
     _check(load_delta("bad-templated"), ctx, cfg, {"TEMPLATED_RATIONALE"})
 
 
 def test_must_q7_duplicate_share_at_twenty_percent_is_allowed(ctx, cfg):
-    result = _accept(mut_templated_at_limit(), ctx, cfg)
-    assert len(result.stats.emergent_edge_ids) == 10
+    g = mut_templated_at_limit()
+    ref = analyse(g, ctx)
+    assert len(ref.units) == 10 and ref.templated_share * 5 == 1, "self-check (v.8 reference): 2 of 10 units"
+    result = _accept(g, ctx, cfg)
+    assert len(result.stats.emergent_edge_ids) == 8 and len(result.stats.bridge_node_ids) == 2  # v.8: was 10 edges
 
 
 # ---------------------------------------------------------------------------

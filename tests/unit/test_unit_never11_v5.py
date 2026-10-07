@@ -103,12 +103,13 @@ def _deltabrain_responses(w: dict[str, Any], uid: str, db: str) -> dict[str, Any
         "get": got,
         "list": _ok(_call(w, uid, "deltabrain_list")),
         "export": _ok(_call(w, uid, "deltabrain_export", deltabrain_id=db)),
-        "rate_unknown": _call(w, uid, "deltabrain_rate", deltabrain_id=db, edge_id="no-such-edge", novelty=1, validity=1,
-                              usefulness=1),
+        "rate_unknown": _call(w, uid, "deltabrain_rate", deltabrain_id=db, target_id="no-such-edge", novelty=1,
+                              validity=1, usefulness=1),
     }
-    for eid in got["untrusted_data"]["deltabrain"]["stats"]["emergent_edge_ids"]:
-        responses[f"rate:{eid}"] = _ok(_call(w, uid, "deltabrain_rate", deltabrain_id=db, edge_id=eid, novelty=1,
-                                             validity=0, usefulness=1))
+    stats = got["untrusted_data"]["deltabrain"]["stats"]
+    for target in [*stats["bridge_node_ids"], *stats["emergent_edge_ids"]]:  # v.8 rating units
+        responses[f"rate:{target}"] = _ok(_call(w, uid, "deltabrain_rate", deltabrain_id=db, target_id=target,
+                                                novelty=1, validity=0, usefulness=1))
     responses["get_after_rating"] = _ok(_call(w, uid, "deltabrain_get", deltabrain_id=db))
     return responses
 

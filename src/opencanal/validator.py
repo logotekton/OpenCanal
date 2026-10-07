@@ -1,6 +1,9 @@
-"""L1 deterministic validation of a deltabrain submission (ORACLE §4, §5.1).
+"""L1 deterministic validation of a deltabrain submission (ORACLE §4, §5.1, v.8).
 
 Owner: Builder V. Pure functions: no DB, no I/O besides the passed config.
+
+Rating units (v.8 §4) are bridge nodes (new nodes whose provenance owners number >= 2) and emergent
+edges (owners >= 2, not touching the query node, not a self-anchor edge). Q3, Q4 and Q7 work on them.
 
 Violation messages are read by the synthesizing LLM, so each one says what to fix.
 They never quote text from canal subbrains (labels, summaries): only ids and refs the
@@ -12,6 +15,7 @@ from __future__ import annotations
 from collections import Counter, deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any
 
 from pydantic import ValidationError
@@ -39,6 +43,15 @@ from .models import (
 from .textnorm import normalize, tokenize
 
 _SubbrainKey = tuple[str, int]
+_RefKey = tuple[str, int, str]
+
+# ORACLE v.8 MUST-Q4: a bridge node's summary, normalized. models.py has no constant for it (DeltaNode.summary
+# caps the raw text at 600, but NFKC can lengthen it, so the normalized upper bound is still checked here).
+BRIDGE_SUMMARY_MIN_CHARS = 40
+BRIDGE_SUMMARY_MAX_CHARS = 600
+
+# Exact decimal value of the Oracle's 20%, so the ratio test is rational arithmetic, not float rounding.
+_TEMPLATED_MAX = Fraction(repr(TEMPLATED_RATIONALE_MAX_RATIO))
 
 _MAX_ECHO_CHARS = 80
 _MAX_LISTED_IDS = 30
@@ -67,12 +80,16 @@ def _id_list(ids: Sequence[str]) -> str:
     return f"{shown} (+{rest})" if rest > 0 else shown
 
 
+def _ref_key(ref: ProvRef) -> _RefKey:
+    return (ref.subbrain_id, ref.version, ref.node_id)
+
+
 def _distinct(refs: Iterable[ProvRef]) -> list[ProvRef]:
     """Refs without exact repeats: citing the same node twice is still one source."""
-    seen: set[tuple[str, int, str]] = set()
+    seen: set[_RefKey] = set()
     out: list[ProvRef] = []
     for ref in refs:
-        key = (ref.subbrain_id, ref.version, ref.node_id)
+        key = _ref_key(ref)
         if key not in seen:
             seen.add(key)
             out.append(ref)
@@ -132,8 +149,24 @@ def _index(ctx: CanalContext) -> _CanalIndex:
 
 
 # ---------------------------------------------------------------------------
-# Effective provenance and emergence (ORACLE §4)
+# Bridges and emergent edges (ORACLE v.8 §4)
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _NodeInfo:
+    node: DeltaNode
+    owners: frozenset[str]
+    cites_host: bool
+
+    @property
+    def bridge(self) -> bool:
+        """v.8 §4: a new node whose owner set (owners of its valid refs) has 2 or more owners."""
+        return self.node.kind == NodeKind.NEW and len(self.owners) >= 2
+
+    @property
+    def host_bridge(self) -> bool:
+        return self.bridge and self.cites_host
 
 
 @dataclass(frozen=True)
@@ -141,10 +174,21 @@ class _EdgeInfo:
     edge: DeltaEdge
     owners: frozenset[str]
     host_touching: bool
+    emergent: bool
+
+
+@dataclass(frozen=True)
+class _Analysis:
+    nodes: list[_NodeInfo]  # submission order
+    edges: list[_EdgeInfo]  # submission order
 
     @property
-    def emergent(self) -> bool:
-        return len(self.owners) >= 2
+    def bridges(self) -> list[_NodeInfo]:
+        return [info for info in self.nodes if info.bridge]
+
+    @property
+    def emergent(self) -> list[_EdgeInfo]:
+        return [info for info in self.edges if info.emergent]
 
 
 def _node_valid_refs(node: DeltaNode, idx: _CanalIndex) -> list[ProvRef]:
@@ -153,35 +197,76 @@ def _node_valid_refs(node: DeltaNode, idx: _CanalIndex) -> list[ProvRef]:
     return [ref for ref in _distinct(node.provenance) if idx.is_valid(ref)]
 
 
-def _analyze_edges(submission: DeltabrainSubmission, idx: _CanalIndex) -> list[_EdgeInfo]:
-    node_refs = {node.id: _node_valid_refs(node, idx) for node in submission.nodes}
-    infos: list[_EdgeInfo] = []
+def _is_self_anchor(
+    source: str, target: str, kinds: dict[str, NodeKind], ref_keys: dict[str, frozenset[_RefKey]]
+) -> bool:
+    """v.8 §4: a new node N linked (either direction) to a source node S whose cited node N already cites.
+
+    Refs are compared as (subbrain_id, version, node_id), because node ids are unique only within one version.
+    Only valid refs count, as everywhere in §4: a ref that does not resolve is ignored.
+    """
+    for new_id, source_id in ((source, target), (target, source)):
+        if kinds.get(new_id) == NodeKind.NEW and kinds.get(source_id) == NodeKind.SOURCE:
+            if ref_keys.get(source_id, frozenset()) & ref_keys.get(new_id, frozenset()):
+                return True
+    return False
+
+
+def _analyze(submission: DeltabrainSubmission, idx: _CanalIndex) -> _Analysis:
+    """Bridges and emergent edges (ORACLE v.8 §4). Tolerates dangling edges and duplicate ids (last node wins)."""
+    nodes: list[_NodeInfo] = []
+    node_refs: dict[str, list[ProvRef]] = {}
+    for node in submission.nodes:
+        refs = _node_valid_refs(node, idx)
+        node_refs[node.id] = refs
+        nodes.append(_NodeInfo(
+            node=node,
+            owners=frozenset(idx.owner(ref) for ref in refs),
+            cites_host=any(idx.key(ref) == idx.host for ref in refs),
+        ))
+    ref_keys = {node_id: frozenset(_ref_key(ref) for ref in refs) for node_id, refs in node_refs.items()}
+    kinds = {node.id: node.kind for node in submission.nodes}
+    edges: list[_EdgeInfo] = []
     for edge in submission.edges:
         # Oracle v.3 §4: only endpoint provenance decides owners; edge-level refs are evidence (checked by Q1).
         refs = [*node_refs.get(edge.source, ()), *node_refs.get(edge.target, ())]
-        infos.append(
+        owners = frozenset(idx.owner(ref) for ref in refs)
+        touches_query = NodeKind.QUERY in (kinds.get(edge.source), kinds.get(edge.target))
+        edges.append(
             _EdgeInfo(
                 edge=edge,
-                owners=frozenset(idx.owner(ref) for ref in refs),
+                owners=owners,
                 host_touching=any(idx.key(ref) == idx.host for ref in refs),
+                emergent=(
+                    len(owners) >= 2
+                    and not touches_query
+                    and not _is_self_anchor(edge.source, edge.target, kinds, ref_keys)
+                ),
             )
         )
-    return infos
+    return _Analysis(nodes=nodes, edges=edges)
 
 
-def _stats(submission: DeltabrainSubmission, idx: _CanalIndex, infos: list[_EdgeInfo]) -> DeltabrainStats:
+def _stats(submission: DeltabrainSubmission, idx: _CanalIndex, analysis: _Analysis) -> DeltabrainStats:
     owners: set[str] = set()
-    for node in submission.nodes:
-        owners.update(idx.owner(ref) for ref in _node_valid_refs(node, idx))
+    for info in analysis.nodes:
+        owners.update(info.owners)
     for edge in submission.edges:
         owners.update(idx.owner(ref) for ref in edge.provenance if idx.is_valid(ref))
+    bridges = analysis.bridges
+    emergent = analysis.emergent
     return DeltabrainStats(
         node_count=len(submission.nodes),
         edge_count=len(submission.edges),
         new_node_count=sum(1 for node in submission.nodes if node.kind == NodeKind.NEW),
-        emergent_edge_ids=[info.edge.id for info in infos if info.emergent],
-        host_touching_emergent_edge_ids=[info.edge.id for info in infos if info.emergent and info.host_touching],
+        emergent_edge_ids=[info.edge.id for info in emergent],
+        host_touching_emergent_edge_ids=[info.edge.id for info in emergent if info.host_touching],
         owners_involved=len(owners),
+        bridge_node_ids=[info.node.id for info in bridges],
+        host_bridge_node_ids=[info.node.id for info in bridges if info.host_bridge],
+        # Reported, never enforced (owner decision 2026-10-07). Whitespace, punctuation or invisible filler is not
+        # a constraint, so the same normalization as every other text rule decides "filled".
+        bridges_with_constraints=sum(1 for info in bridges if normalize(info.node.constraints)),
     )
 
 
@@ -211,6 +296,14 @@ def _check_graph_schema(sub: DeltabrainSubmission) -> list[Violation]:
                 f"/ Edge id {_q(edge_id)} is used {count} times; give every edge a unique id.",
                 edge_id=edge_id,
             ))
+    for shared_id in sorted(set(node_counts) & set(edge_counts)):
+        # v.9 MUST-Q0: rating targets (bridge nodes, emergent edges) share one id namespace.
+        out.append(_v(
+            ViolationCode.SCHEMA_INVALID,
+            f"ID {_q(shared_id)}가 노드와 엣지에 함께 쓰였습니다. 노드와 엣지 ID는 서로 겹치지 않게 쓰세요. "
+            f"/ Id {_q(shared_id)} names both a node and an edge; node and edge ids must not overlap.",
+            node_id=shared_id,
+        ))
     for edge in sub.edges:
         for end, node_id in (("source", edge.source), ("target", edge.target)):
             if node_id not in node_counts:
@@ -401,60 +494,108 @@ def _check_relations(sub: DeltabrainSubmission) -> list[Violation]:
     ]
 
 
-def _check_emergence(infos: list[_EdgeInfo]) -> list[Violation]:
-    """MUST-Q3."""
-    emergent = [info for info in infos if info.emergent]
-    if not emergent:
+_SUMMARY_BOUNDS_KO = f"정규화 기준 {BRIDGE_SUMMARY_MIN_CHARS}~{BRIDGE_SUMMARY_MAX_CHARS}자"
+_SUMMARY_BOUNDS_EN = f"{BRIDGE_SUMMARY_MIN_CHARS}-{BRIDGE_SUMMARY_MAX_CHARS} normalized chars"
+_RATIONALE_BOUNDS_KO = f"정규화 기준 {RATIONALE_MIN_CHARS}~{RATIONALE_MAX_CHARS}자"
+_RATIONALE_BOUNDS_EN = f"{RATIONALE_MIN_CHARS}-{RATIONALE_MAX_CHARS} normalized chars"
+
+# v.8 §4 definitions, shared by the MUST-Q3 messages so the synthesizer sees the same rule each time.
+_UNITS_RULE_KO = (
+    "다리는 서로 다른 주인 2명 이상의 서브브레인 노드를 함께 인용하는 new 노드이고, 호스트 다리는 그중 호스트 "
+    "서브브레인 노드를 인용하는 다리입니다. 창발 엣지는 양 끝 노드가 인용한 출처의 주인을 합쳐 2명 이상인 엣지인데, "
+    "query 노드에 닿는 엣지와 자기 앵커 엣지(new 노드와, 그 new 노드가 이미 인용한 노드를 앵커한 source 노드를 잇는 "
+    "엣지)는 세지 않습니다. new 노드끼리 잇는 엣지는 이 조건을 만족하면 창발입니다. 엣지에 직접 적은 출처는 근거일 뿐 "
+    "창발이나 호스트 판정에 쓰지 않습니다."
+)
+_UNITS_RULE_EN = (
+    "A bridge is a new node whose provenance cites subbrain nodes of 2 or more different owners; a host bridge is a "
+    "bridge that cites a host subbrain node. An emergent edge is an edge whose two END NODES together cite 2 or more "
+    "owners, except edges touching the query node and self-anchor edges (a new node linked to a source node that "
+    "anchors a node the new node already cites). An edge between two new nodes is emergent when it meets these "
+    "conditions. Refs written on the edge itself are evidence and never count for emergence or the host."
+)
+
+
+def _check_emergence(analysis: _Analysis) -> list[Violation]:
+    """MUST-Q3 (v.8): bridges + emergent edges >= 1, and one of them touches the host."""
+    bridges, emergent = analysis.bridges, analysis.emergent
+    if not bridges and not emergent:
         return [_v(
             ViolationCode.NO_EMERGENCE,
-            "창발 엣지가 없습니다. 창발은 엣지 양 끝 노드가 인용한 출처의 주인만으로 정합니다. "
-            "엣지에 직접 적은 출처는 근거일 뿐 창발을 만들지 않습니다. 양 끝 노드의 출처를 합쳐 주인이 2명 이상인 엣지를 "
-            "1개 이상 만드세요. 예: 서로 다른 주인의 노드를 함께 인용하는 new 노드를 만들어 다른 노드와 잇거나, "
-            "한 주인의 노드를 앵커한 source 노드와 다른 주인의 노드를 앵커한 source 노드를 이으세요. "
-            "/ No emergent edge. Emergence is decided only by the owners of the refs cited by an edge's two END NODES; "
-            "refs written on the edge itself are evidence and never make it emergent. Make at least one edge whose two "
-            "end nodes together cite subbrains of 2 or more different owners: e.g. connect a new node that cites nodes "
-            "of both owners, or link a source node anchored in one owner's subbrain to a source node anchored in "
-            "another owner's subbrain.",
+            f"다리도 창발 엣지도 없습니다. {_UNITS_RULE_KO} 고치려면 서로 다른 주인의 노드를 함께 인용하는 new 노드(다리)를 "
+            f"만들고 {_SUMMARY_BOUNDS_KO} summary를 쓰거나, 서로 다른 주인의 서브브레인을 앵커한 source 노드 둘을 "
+            f"{_RATIONALE_BOUNDS_KO} rationale과 함께 이으세요. "
+            f"/ No bridge and no emergent edge. {_UNITS_RULE_EN} To fix it, add a new node (a bridge) that cites nodes "
+            f"of different owners and give it a summary of {_SUMMARY_BOUNDS_EN}, or link two source nodes anchored in "
+            f"different owners' subbrains with a rationale of {_RATIONALE_BOUNDS_EN}.",
         )]
-    if not any(info.host_touching for info in emergent):
+    if not any(info.host_bridge for info in bridges) and not any(info.host_touching for info in emergent):
         return [_v(
             ViolationCode.HOST_NOT_TOUCHED,
-            "호스트 서브브레인에 닿는 창발 엣지가 없습니다. 호스트에 닿는지는 엣지 양 끝 노드의 출처로만 정하고, "
-            "엣지에 직접 적은 호스트 출처는 세지 않습니다. 창발 엣지 1개 이상의 한쪽 끝 노드가 호스트 서브브레인 노드를 "
-            "인용하게 하세요. 예: 호스트 노드와 다른 주인의 노드를 함께 인용하는 new 노드를 만들어 잇거나, "
-            "호스트 노드를 앵커한 source 노드를 다른 주인의 노드를 인용한 노드와 이으세요. "
-            "/ No emergent edge touches the host subbrain. Host-touching is decided only by the refs of an edge's two "
-            "END NODES; a host ref written on the edge itself does not count. Make at least one emergent edge with an "
-            "end node that cites a host subbrain node: e.g. connect a new node that cites both a host node and another "
-            "owner's node, or link a source node anchored in the host subbrain to a node citing another owner.",
+            f"호스트에 닿는 다리도 창발 엣지도 없습니다. {_UNITS_RULE_KO} 창발 엣지가 호스트에 닿는지는 양 끝 노드 중 "
+            f"하나가 호스트 서브브레인 노드를 인용하는지로만 정합니다. 고치려면 호스트 노드와 다른 주인의 노드를 함께 "
+            f"인용하는 new 노드(호스트 다리)를 만들고 {_SUMMARY_BOUNDS_KO} summary를 쓰거나, 호스트 노드를 앵커한 source "
+            f"노드를 다른 주인의 서브브레인을 앵커한 source 노드와 {_RATIONALE_BOUNDS_KO} rationale과 함께 이으세요. "
+            f"/ No bridge or emergent edge touches the host subbrain. {_UNITS_RULE_EN} An emergent edge touches the "
+            f"host only when one of its end nodes cites a host subbrain node. To fix it, add a new node (a host bridge) "
+            f"that cites both a host node and another owner's node and give it a summary of {_SUMMARY_BOUNDS_EN}, or "
+            f"link a source node anchored in the host subbrain to a source node anchored in another owner's subbrain "
+            f"with a rationale of {_RATIONALE_BOUNDS_EN}.",
         )]
     return []
 
 
-def _check_rationales(infos: list[_EdgeInfo]) -> list[Violation]:
-    """MUST-Q4, rationale length on emergent edges (normalized characters)."""
+def _length_problem(length: int, low: int, high: int, field: str, subject_ko: str) -> tuple[str, str] | None:
+    """(Korean, English) phrase for a length outside [low, high]; `subject_ko` is the field with its particle."""
+    if low <= length <= high:
+        return None
+    if length == 0:
+        return f"{subject_ko} 없습니다", f"has no {field}"
+    if length < low:
+        return f"{subject_ko} {length}자로 너무 짧습니다", f"{field} is too short ({length} chars)"
+    return f"{subject_ko} {length}자로 너무 깁니다", f"{field} is too long ({length} chars)"
+
+
+def _check_rationales(analysis: _Analysis) -> list[Violation]:
+    """MUST-Q4 (v.8): every rating unit carries an explanation (normalized characters).
+
+    Bridge nodes need a summary, emergent edges a rationale. Other nodes and edges are not rating units.
+    """
     out: list[Violation] = []
-    bounds = f"{RATIONALE_MIN_CHARS}~{RATIONALE_MAX_CHARS}"
-    for info in infos:
-        if not info.emergent:
+    for info in analysis.bridges:
+        node = info.node
+        problem = _length_problem(
+            len(normalize(node.summary)), BRIDGE_SUMMARY_MIN_CHARS, BRIDGE_SUMMARY_MAX_CHARS, "summary", "summary가"
+        )
+        if problem is None:
             continue
-        edge = info.edge
-        length = len(normalize(edge.rationale))
-        if RATIONALE_MIN_CHARS <= length <= RATIONALE_MAX_CHARS:
-            continue
-        if length == 0:
-            ko, en = "rationale이 없습니다", "has no rationale"
-        elif length < RATIONALE_MIN_CHARS:
-            ko, en = f"rationale이 {length}자로 너무 짧습니다", f"rationale is too short ({length} chars)"
-        else:
-            ko, en = f"rationale이 {length}자로 너무 깁니다", f"rationale is too long ({length} chars)"
+        ko, en = problem
         out.append(_v(
             ViolationCode.RATIONALE_MISSING,
-            f"창발 엣지 {_q(edge.id)}의 {ko}. 이 연결이 왜 성립하는지 정규화 기준 {bounds}자로 쓰세요. "
+            f"다리 노드 {_q(node.id)}의 {ko}. 다리(서로 다른 주인 2명 이상의 노드를 인용한 new 노드)는 사람이 평가하는 "
+            f"단위라서 설명이 있어야 합니다. 이 개념이 무엇이고 어떻게 작동하는지 {_SUMMARY_BOUNDS_KO}로 summary에 쓰세요. "
             f"정규화는 보이지 않는 문자와 구두점을 공백으로 바꾸고 연속 공백을 하나로 줄인 뒤 셉니다. "
-            f"/ Emergent edge {_q(edge.id)} {en}; explain why the link holds in "
-            f"{RATIONALE_MIN_CHARS}-{RATIONALE_MAX_CHARS} normalized chars "
+            f"/ Bridge node {_q(node.id)} {en}. A bridge (a new node citing nodes of 2 or more different owners) is a "
+            f"rating unit and needs an explanation: say what the concept is and how it works in its summary, in "
+            f"{_SUMMARY_BOUNDS_EN} (invisible characters and punctuation count as spaces, and runs of spaces count "
+            f"as one).",
+            node_id=node.id,
+        ))
+    for info in analysis.emergent:
+        edge = info.edge
+        problem = _length_problem(
+            len(normalize(edge.rationale)), RATIONALE_MIN_CHARS, RATIONALE_MAX_CHARS, "rationale", "rationale이"
+        )
+        if problem is None:
+            continue
+        ko, en = problem
+        out.append(_v(
+            ViolationCode.RATIONALE_MISSING,
+            f"창발 엣지 {_q(edge.id)}의 {ko}. 창발 엣지(양 끝 노드의 출처 주인이 2명 이상이고, query 노드에 닿지 않고, "
+            f"자기 앵커 엣지가 아닌 엣지)는 사람이 평가하는 단위입니다. 이 연결이 왜 성립하는지 {_RATIONALE_BOUNDS_KO}로 "
+            f"쓰세요. 정규화는 보이지 않는 문자와 구두점을 공백으로 바꾸고 연속 공백을 하나로 줄인 뒤 셉니다. "
+            f"/ Emergent edge {_q(edge.id)} {en}. An emergent edge (end nodes citing 2 or more owners, not touching the "
+            f"query node, not a self-anchor edge) is a rating unit: explain why the link holds in {_RATIONALE_BOUNDS_EN} "
             f"(invisible characters and punctuation count as spaces, and runs of spaces count as one).",
             edge_id=edge.id,
         ))
@@ -579,44 +720,87 @@ def _label_skeleton(text: str, labels: Iterable[str]) -> str:
     return text
 
 
-def _check_templated(sub: DeltabrainSubmission, infos: list[_EdgeInfo]) -> list[Violation]:
-    """MUST-Q7: share of emergent edges whose normalized rationale repeats another's <= 20%.
+@dataclass(frozen=True)
+class _Explanation:
+    """One rating unit's normalized explanation for MUST-Q7."""
 
-    Two rationales are the same when their normalized texts are equal or, after both endpoint labels of each
-    edge are replaced by the same placeholder (v.4), their skeletons are equal: a template with only the
-    labels swapped is "also" the same sentence, and an exact copy stays a copy.
-    """
+    unit_id: str
+    is_node: bool
+    text: str
+    skeleton: str | None  # emergent edges only: endpoint labels replaced (v.4); summaries compare as text
+
+
+def _explanations(sub: DeltabrainSubmission, analysis: _Analysis) -> list[_Explanation]:
+    """Bridge summaries, then emergent edge rationales, in submission order. Empty ones are RATIONALE_MISSING."""
+    out: list[_Explanation] = []
+    for info in analysis.bridges:
+        text = normalize(info.node.summary)
+        if text:
+            # v.9 MUST-Q7: a summary is compared with its own bridge label replaced, like a rationale (v.4).
+            skeleton = _label_skeleton(text, (normalize(info.node.label),))
+            out.append(_Explanation(unit_id=info.node.id, is_node=True, text=text, skeleton=skeleton))
     labels = {node.id: normalize(node.label) for node in sub.nodes}
-    rationales: list[tuple[str, str, str]] = []  # (edge id, normalized text, label skeleton)
-    for info in infos:
+    for info in analysis.emergent:
         text = normalize(info.edge.rationale)
-        if info.emergent and text:
+        if text:
             ends = (labels.get(info.edge.source, ""), labels.get(info.edge.target, ""))
-            rationales.append((info.edge.id, text, _label_skeleton(text, ends)))
-    if not rationales:
+            out.append(_Explanation(
+                unit_id=info.edge.id, is_node=False, text=text, skeleton=_label_skeleton(text, ends)
+            ))
+    return out
+
+
+def _check_templated(sub: DeltabrainSubmission, analysis: _Analysis) -> list[Violation]:
+    """MUST-Q7 (v.8): share of rating units whose normalized explanation repeats another unit's <= 20%.
+
+    The units are bridge summaries and emergent edge rationales, compared in one pool: a summary that equals a
+    rationale counts for both. Two rationales are also the same when, after each edge's two endpoint labels are
+    replaced by one placeholder (v.4), their skeletons are equal: a template with only the labels swapped is the
+    same sentence, and an exact copy stays a copy. v.9: a bridge summary gets the same treatment with its own label.
+    """
+    units = _explanations(sub, analysis)
+    if not units:
         return []
-    text_counts = Counter(text for _, text, _ in rationales)
-    skeleton_counts = Counter(skeleton for _, _, skeleton in rationales)
+    text_counts = Counter(unit.text for unit in units)
+    skeleton_counts = Counter(unit.skeleton for unit in units if unit.skeleton is not None)
     repeated = [
-        edge_id
-        for edge_id, text, skeleton in rationales
-        if text_counts[text] > 1 or skeleton_counts[skeleton] > 1
+        unit
+        for unit in units
+        if text_counts[unit.text] > 1 or (unit.skeleton is not None and skeleton_counts[unit.skeleton] > 1)
     ]
-    total = len(rationales)
-    if len(repeated) / total <= TEMPLATED_RATIONALE_MAX_RATIO:
+    total = len(units)
+    share = Fraction(len(repeated), total)
+    if share <= _TEMPLATED_MAX:
         return []
-    pct = round(100 * len(repeated) / total)
-    limit = round(100 * TEMPLATED_RATIONALE_MAX_RATIO)
+    pct = round(100 * share)
+    limit = round(100 * _TEMPLATED_MAX)
+    node_ids = [unit.unit_id for unit in repeated if unit.is_node]
+    edge_ids = [unit.unit_id for unit in repeated if not unit.is_node]
+    listed_ko = "; ".join(
+        part for part in (
+            f"다리 노드 {_id_list(node_ids)}" if node_ids else "",
+            f"창발 엣지 {_id_list(edge_ids)}" if edge_ids else "",
+        ) if part
+    )
+    listed_en = "; ".join(
+        part for part in (
+            f"bridge nodes {_id_list(node_ids)}" if node_ids else "",
+            f"emergent edges {_id_list(edge_ids)}" if edge_ids else "",
+        ) if part
+    )
     return [_v(
         ViolationCode.TEMPLATED_RATIONALE,
-        f"창발 엣지 {total}개 중 {len(repeated)}개({pct}%)의 rationale이 다른 엣지와 같은 문장입니다(허용 {limit}% 이하): "
-        f"{_id_list(repeated)}. 비교 전에 정규화하고 각 엣지의 양 끝 노드 라벨을 같은 자리표시자로 바꾸므로, "
-        f"노드 이름만 갈아 끼운 틀 문장도 같은 문장입니다. 엣지마다 무엇이 무엇에 대응하는지, 왜 그 연결이 성립하는지를 "
-        f"그 연결에만 해당하는 내용으로 다시 쓰세요. "
-        f"/ {len(repeated)} of {total} emergent edges ({pct}%) share the same rationale (max {limit}%): "
-        f"{_id_list(repeated)}. Rationales are compared after normalization with both end-node labels of each edge "
-        f"replaced by one placeholder, so a template with only the node names swapped is the same sentence; "
-        f"rewrite each one to say what maps to what and why this particular link holds.",
+        f"평가 단위(다리 노드의 summary와 창발 엣지의 rationale) {total}개 중 {len(repeated)}개({pct}%)의 설명이 다른 "
+        f"단위와 같은 문장입니다(허용 {limit}% 이하): {listed_ko}. 비교 전에 정규화하고, 엣지 rationale은 그 엣지의 양 끝 "
+        f"노드 라벨을 같은 자리표시자로 바꾸므로 노드 이름만 갈아 끼운 틀 문장도 같은 문장입니다. 다리 summary와 엣지 "
+        f"rationale도 서로 비교합니다. 다리마다 그 개념이 무엇이고 어떻게 작동하는지, 엣지마다 무엇이 무엇에 대응하고 "
+        f"왜 그 연결이 성립하는지를 그 단위에만 해당하는 내용으로 다시 쓰세요. "
+        f"/ {len(repeated)} of {total} rating units ({pct}%; bridge node summaries and emergent edge rationales) "
+        f"share the same explanation (max {limit}%): {listed_en}. Explanations are compared after normalization, and "
+        f"each edge rationale has both of its end-node labels replaced by one placeholder, so a template with only "
+        f"the node names swapped is the same sentence; summaries and rationales are compared with each other too. "
+        f"Rewrite each one with content specific to that unit: what the bridge concept is and how it works, or what "
+        f"maps to what and why this particular link holds.",
     )]
 
 
@@ -668,9 +852,14 @@ def parse_submission(payload: dict[str, Any]) -> tuple[DeltabrainSubmission | No
 
 
 def compute_stats(submission: DeltabrainSubmission, ctx: CanalContext) -> DeltabrainStats:
-    """Emergent edges = endpoint provenance owners >= 2; host-touching = an endpoint cites the host subbrain (Oracle v.3)."""
+    """Stats under ORACLE v.8 §4 (same as validate_deltabrain's), tolerating graphs that fail the schema checks.
+
+    Bridges = new nodes citing >= 2 owners (host bridge: also cites the host subbrain). Emergent edges = endpoint
+    provenance owners >= 2, not touching a query node, not a self-anchor edge; host-touching = an endpoint cites
+    the host subbrain. Edge-level refs count only toward owners_involved.
+    """
     idx = _index(ctx)
-    return _stats(submission, idx, _analyze_edges(submission, idx))
+    return _stats(submission, idx, _analyze(submission, idx))
 
 
 def validate_deltabrain(
@@ -696,7 +885,7 @@ def validate_deltabrain(
         return ValidationResult(ok=False, violations=schema, stats=None)
 
     idx = _index(ctx)
-    infos = _analyze_edges(submission, idx)
+    analysis = _analyze(submission, idx)
     violations = [
         *_check_size(submission),
         *_check_query_count(submission),
@@ -704,10 +893,10 @@ def validate_deltabrain(
         *_check_source_labels(submission, idx),
         *_check_hops(submission),
         *_check_relations(submission),
-        *_check_emergence(infos),
-        *_check_rationales(infos),
-        *_check_novelty(submission, idx, infos),
+        *_check_emergence(analysis),
+        *_check_rationales(analysis),
+        *_check_novelty(submission, idx, analysis.edges),
         *_check_generic(submission, generic_terms, josa_suffixes, josa_min_stem_length),
-        *_check_templated(submission, infos),
+        *_check_templated(submission, analysis),
     ]
-    return ValidationResult(ok=not violations, violations=violations, stats=_stats(submission, idx, infos))
+    return ValidationResult(ok=not violations, violations=violations, stats=_stats(submission, idx, analysis))

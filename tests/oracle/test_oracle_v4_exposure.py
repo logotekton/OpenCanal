@@ -210,7 +210,10 @@ def test_never_04_v4_publishing_v2_with_v1_hash_is_confirmation_mismatch(seeded:
 # ---------------------------------------------------------------------------
 
 EDGES = [f"e{i}" for i in range(1, 11)]
-GOOD_EMERGENT = {"e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10"}
+# Oracle v.8: rating targets are bridge nodes or emergent edges (`target_id`), so every node id is tried as well.
+TARGETS = [*EDGES, "q", "s-a1", "s-a2", "s-a3", "s-b1", "s-c1", "s-c2", "n1", "n2"]
+# ORACLE v.8 §4: e1/e2 query edges, e5-e8 self-anchor edges are not emergent (was v.7: e3-e10).
+GOOD_EMERGENT = {"e3", "e4", "e9", "e10"}
 VIEWERS = ("user_a", "user_e")
 
 
@@ -255,9 +258,9 @@ def _never11_world(base: Path, variant: str) -> dict[str, Any]:
         out["raw"][(viewer, "get")] = got
         out["raw"][(viewer, "list")] = w.call(viewer, "deltabrain_list")
     for viewer in VIEWERS:
-        for eid in EDGES:
+        for eid in TARGETS:
             out["raw"][(viewer, f"rate:{eid}")] = w.call(
-                viewer, "deltabrain_rate", deltabrain_id=db_id, edge_id=eid, novelty=1, validity=1, usefulness=0
+                viewer, "deltabrain_rate", deltabrain_id=db_id, target_id=eid, novelty=1, validity=1, usefulness=0
             )
     for viewer in VIEWERS:
         out["raw"][(viewer, "get_after_rating")] = w.call(viewer, "deltabrain_get", deltabrain_id=db_id)
@@ -265,7 +268,7 @@ def _never11_world(base: Path, variant: str) -> dict[str, Any]:
         w.set_tier(viewer, Tier.PRO)  # same change in both worlds, after the canal exists
         out["raw"][(viewer, "export")] = w.call(viewer, "deltabrain_export", deltabrain_id=db_id)
         out["raw"][(viewer, "rate_unknown_edge")] = w.call(
-            viewer, "deltabrain_rate", deltabrain_id=db_id, edge_id="e404", novelty=1, validity=1, usefulness=1
+            viewer, "deltabrain_rate", deltabrain_id=db_id, target_id="e404", novelty=1, validity=1, usefulness=1
         )
     return out
 
@@ -287,6 +290,21 @@ def _canon(out: dict[str, Any], key: tuple[str, str]) -> Any:
 
 
 @pytest.mark.parametrize("viewer", VIEWERS)
+def test_never_11_v8_viewer_stats_carry_v8_fields_and_ratings_succeed(never11_worlds, viewer):
+    """Keeps the identity comparison below from being vacuous under v.8: the compared deltabrain_get carries the v.8
+    stats fields, and the rating calls being compared actually rate (the units in the viewer's view are the same in
+    both worlds: the masked contributor counts as its own visible identity, so e9 joins two owners in both)."""
+    for variant, out in never11_worlds.items():
+        text = dumps(out["raw"][(viewer, "get")])
+        for key in ("bridge_node_ids", "host_bridge_node_ids", "bridges_with_constraints", "emergent_edge_ids"):
+            assert key in text, f"{variant}/{viewer}: v.8 stats field {key} missing from deltabrain_get"
+        for target in ("n1", "n2", *sorted(GOOD_EMERGENT)):
+            assert_ok(out["raw"][(viewer, f"rate:{target}")])
+        for target in ("e1", "e5", "s-a1"):
+            assert_err(out["raw"][(viewer, f"rate:{target}")], "NOT_RATEABLE")
+
+
+@pytest.mark.parametrize("viewer", VIEWERS)
 @pytest.mark.parametrize("call", ["get", "list", "get_after_rating", "list_after_rating", "export", "rate_unknown_edge"])
 def test_never_11_v4_views_identical_whether_private_contributor_is_visible_owner(never11_worlds, viewer, call):
     a = _canon(never11_worlds["distinct"], (viewer, call))
@@ -298,7 +316,7 @@ def test_never_11_v4_views_identical_whether_private_contributor_is_visible_owne
 
 @pytest.mark.parametrize("viewer", VIEWERS)
 def test_never_11_v4_rating_responses_identical_whether_private_contributor_is_visible_owner(never11_worlds, viewer):
-    for eid in EDGES:
+    for eid in TARGETS:
         a = _canon(never11_worlds["distinct"], (viewer, f"rate:{eid}"))
         b = _canon(never11_worlds["same"], (viewer, f"rate:{eid}"))
         assert a == b, f"{viewer} rating {eid}: {first_difference(a, b)}\n distinct: {dumps(a)}\n same    : {dumps(b)}"

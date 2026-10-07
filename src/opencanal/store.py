@@ -41,10 +41,12 @@ from .models import (
     DeltabrainRecord,
     DeltabrainStats,
     DeltabrainSubmission,
+    DeltaNode,
     EdgeRating,
     ErrorCode,
     NodeKind,
     OpenCanalError,
+    ProvRef,
     QueryMode,
     SubbrainDocument,
     SubbrainSummary,
@@ -53,6 +55,7 @@ from .models import (
     User,
     Visibility,
 )
+from .textnorm import normalize
 
 MASKED_DISPLAY = "비공개 기여자"
 MONTHLY_CANAL_LIMIT_MESSAGE = "이번 달 커널 수 한도를 넘습니다 / monthly canal limit reached"
@@ -181,45 +184,97 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def _viewer_stats(
+def _ref_key(ref: ProvRef) -> tuple[str, int, str]:
+    return (ref.subbrain_id, ref.version, ref.node_id)
+
+
+def _has_constraints(node: DeltaNode) -> bool:
+    # v.8: reported, never enforced. Same reading as the validator: filler (spaces, punctuation, invisible
+    # characters) is not a constraint review, so the normalized text decides.
+    return bool(normalize(node.constraints))
+
+
+def _self_anchor(a: DeltaNode, b: DeltaNode, refs: Mapping[str, list[ProvRef]]) -> bool:
+    """ORACLE §4 v.8: a new node N joined to a source node S whose cited node is already in N's provenance.
+    Structural only (refs compared as (subbrain_id, version, node_id), no owner), so it reads the same for
+    every viewer."""
+    if {a.kind, b.kind} != {NodeKind.NEW, NodeKind.SOURCE}:
+        return False
+    new, source = (a, b) if a.kind == NodeKind.NEW else (b, a)
+    return not {_ref_key(r) for r in refs[source.id]}.isdisjoint(_ref_key(r) for r in refs[new.id])
+
+
+def _stats_over_keys(
     submission: DeltabrainSubmission,
     stored: DeltabrainStats,
     host: tuple[str, int],
     keys: Mapping[str, Optional[_IdentityKey]],
 ) -> DeltabrainStats:
-    """Deltabrain stats over the identities one viewer is shown (ORACLE v.4 NEVER-11).
+    """Every identity-dependent stat recomputed with owners counted under `keys` (ORACLE §4 v.8 definitions).
 
-    `keys` maps each cited subbrain_id to the key its owner is shown under (None: no such subbrain). A masked
-    owner is never merged with a plainly shown one, so the result is the same whether the masked contributor is
-    or is not one of the visible owners. Same rules as validator._stats (§4): owners of the endpoint nodes'
-    refs decide emergence (query nodes exempt), owners_involved also counts edge refs. A ref to the host counts
-    as host-touching only when the viewer sees it plainly: a masked ref must not reveal that it is the host.
-    The stored (true) stats are returned unchanged when nothing is masked for this viewer.
+    `keys` maps each cited subbrain_id to the key its owner is counted under (None: no such subbrain).
+    Node owners = keys of the node's refs (query nodes exempt). Bridge = new node with >= 2 keys. Emergent edge
+    = endpoint keys >= 2, no query endpoint, not a self-anchor edge. owners_involved also counts edge refs.
+    A host ref makes a bridge a host bridge, or an edge host-touching, only when that ref's key is plain: a
+    masked ref must not reveal that it is the host. Node and edge counts are structural and kept from `stored`.
     """
-    if all(key is not None and key[0] == "plain" for key in keys.values()):
-        return stored
+    nodes = {node.id: node for node in submission.nodes}
     node_refs = {
         node.id: [] if node.kind == NodeKind.QUERY else [r for r in node.provenance if keys.get(r.subbrain_id)]
         for node in submission.nodes
     }
-    owners = {keys[r.subbrain_id] for refs in node_refs.values() for r in refs}
-    owners |= {keys[r.subbrain_id] for e in submission.edges for r in e.provenance if keys.get(r.subbrain_id)}
+
+    def owners_of(refs: Iterable[ProvRef]) -> set[_IdentityKey]:
+        return {key for r in refs if (key := keys.get(r.subbrain_id)) is not None}
+
+    def shows_host(refs: Iterable[ProvRef]) -> bool:
+        return any((r.subbrain_id, r.version) == host and keys[r.subbrain_id][0] == "plain" for r in refs)
+
+    owners = owners_of(r for refs in node_refs.values() for r in refs)
+    owners |= owners_of(r for e in submission.edges for r in e.provenance)
+    bridges = [n.id for n in submission.nodes if n.kind == NodeKind.NEW and len(owners_of(node_refs[n.id])) >= 2]
     emergent: list[str] = []
     host_touching: list[str] = []
     for edge in submission.edges:
-        refs = [*node_refs.get(edge.source, ()), *node_refs.get(edge.target, ())]
-        if len({keys[r.subbrain_id] for r in refs}) < 2:
+        src, dst = nodes.get(edge.source), nodes.get(edge.target)
+        if src is None or dst is None or NodeKind.QUERY in (src.kind, dst.kind) or _self_anchor(src, dst, node_refs):
+            continue
+        refs = [*node_refs[src.id], *node_refs[dst.id]]
+        if len(owners_of(refs)) < 2:
             continue
         emergent.append(edge.id)
-        if any((r.subbrain_id, r.version) == host and keys[r.subbrain_id][0] == "plain" for r in refs):
+        if shows_host(refs):
             host_touching.append(edge.id)
     return stored.model_copy(
         update={
             "emergent_edge_ids": emergent,
             "host_touching_emergent_edge_ids": host_touching,
             "owners_involved": len(owners),
+            "bridge_node_ids": bridges,
+            "host_bridge_node_ids": [b for b in bridges if shows_host(node_refs[b])],
+            "bridges_with_constraints": sum(1 for b in bridges if _has_constraints(nodes[b])),
         }
     )
+
+
+def _viewer_stats(
+    submission: DeltabrainSubmission,
+    stored: DeltabrainStats,
+    host: tuple[str, int],
+    keys: Mapping[str, Optional[_IdentityKey]],
+) -> DeltabrainStats:
+    """Deltabrain stats over the identities one viewer is shown (ORACLE v.4 NEVER-11, v.8 definitions).
+
+    A masked owner is never merged with a plainly shown one, so the result is the same whether the masked
+    contributor is or is not one of the visible owners (`_stats_over_keys`). The stored (true) stats, which the
+    validator computed at submission, are returned unchanged when nothing is masked for this viewer, unless
+    they were saved before Oracle v.8: such a record has no bridge fields and counts query and self-anchor edges
+    as emergent, so it is recomputed under the v.8 rules (the record itself keeps what the host was told).
+    """
+    saved_under_v8 = "bridge_node_ids" in stored.model_fields_set
+    if saved_under_v8 and all(key is not None and key[0] == "plain" for key in keys.values()):
+        return stored
+    return _stats_over_keys(submission, stored, host, keys)
 
 
 def _fsync_dir(directory: Path) -> None:
@@ -872,7 +927,7 @@ class Store:
                 "deltabrain.submit",
                 deltabrain_id,
                 {"canal_id": canal_id, "node_count": stats.node_count, "edge_count": stats.edge_count,
-                 "emergent_edge_count": len(stats.emergent_edge_ids)},
+                 "emergent_edge_count": len(stats.emergent_edge_ids), "bridge_node_count": len(stats.bridge_node_ids)},
             )
             row = self._one("SELECT * FROM deltabrains WHERE id = ?", (deltabrain_id,))
         return self._record(row)
@@ -914,8 +969,8 @@ class Store:
         Retained content (labels/summaries) stays visible to participants (NEVER-02).
 
         "stats" is computed over the identities shown to this viewer (ORACLE v.4 NEVER-11, `_viewer_stats`):
-        emergent edges, host-touching edges and owners_involved never reveal whether a masked contributor is
-        one of the plainly shown owners. The stored record keeps the true stats.
+        emergent edges, bridges, host-touching edges, host bridges and owners_involved never reveal whether a
+        masked contributor is one of the plainly shown owners. The stored record keeps the true stats.
 
         No real id of a masked subbrain appears anywhere (NEVER-11 v.5): masked refs carry null
         subbrain_id/version/node_id, and "host_subbrain_id" is null when the host is masked for this viewer."""
@@ -1008,6 +1063,7 @@ class Store:
                             "node_count": stats.node_count,
                             "edge_count": stats.edge_count,
                             "emergent_edge_count": len(stats.emergent_edge_ids),
+                            "bridge_node_count": len(stats.bridge_node_ids),
                         },
                     }
                 )
@@ -1022,7 +1078,8 @@ class Store:
         return self._record(row)
 
     def rate_edge(self, rating: EdgeRating, deltabrain_id: str) -> None:
-        """Upsert one rater's labels for one edge. Caller (service) checks participant + emergent edge."""
+        """Upsert one rater's labels for one rating unit (v.8: a bridge node or an emergent edge; its id is kept in
+        the edge_id column). Caller (service) checks participant + rating unit against the viewer's stats."""
         with self._write_txn():
             if self._one("SELECT 1 FROM deltabrains WHERE id = ?", (deltabrain_id,)) is None:
                 raise _not_found()
